@@ -1,0 +1,54 @@
+syntax = "proto3";
+package orlando.cluster;
+
+// Forwards a serialized grain message to the owning silo.
+service GrainTransport {
+  rpc Invoke(InvokeRequest) returns (InvokeResponse);
+}
+
+message InvokeRequest {
+  string grain_type = 1;
+  string grain_key = 2;
+  string message_type = 3;
+  bytes payload = 4;
+}
+
+message InvokeResponse {
+  bytes payload = 1;
+  string error = 2;
+}
+
+// Minimal membership protocol.
+service Membership {
+  rpc Join(JoinRequest) returns (JoinResponse);
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc GetMembers(GetMembersRequest) returns (GetMembersResponse);
+}
+
+message SiloAddress {
+  string host = 1;
+  uint32 port = 2;
+  string silo_id = 3;
+}
+
+message JoinRequest {
+  SiloAddress joiner = 1;
+}
+
+message JoinResponse {
+  repeated SiloAddress members = 1;
+}
+
+message PingRequest {
+  string silo_id = 1;
+}
+
+message PingResponse {
+  string silo_id = 1;
+}
+
+message GetMembersRequest {}
+
+message GetMembersResponse {
+  repeated SiloAddress members = 1;
+}

@@ -1,0 +1,15 @@
+[package]
+name = "orlando-persistence"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+orlando-core = { path = "../orlando-core" }
+orlando-runtime = { path = "../orlando-runtime" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+sqlx = { workspace = true }

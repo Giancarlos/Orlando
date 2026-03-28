@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/orlando-core",
+    "crates/orlando-runtime",
+    "crates/orlando-persistence",
+    "crates/orlando-timers",
+    "crates/orlando-macros",
+    "crates/orlando-cluster",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+dashmap = "6"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+bincode = { version = "2", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+tonic = "0.12"
+prost = "0.13"
