@@ -18,9 +18,11 @@ message InvokeResponse {
   string error = 2;
 }
 
-// Minimal membership protocol.
+// Membership protocol with gossip propagation.
 service Membership {
   rpc Join(JoinRequest) returns (JoinResponse);
+  rpc NotifyJoin(NotifyJoinRequest) returns (NotifyJoinResponse);
+  rpc NotifyLeave(NotifyLeaveRequest) returns (NotifyLeaveResponse);
   rpc Ping(PingRequest) returns (PingResponse);
   rpc GetMembers(GetMembersRequest) returns (GetMembersResponse);
 }
@@ -38,6 +40,20 @@ message JoinRequest {
 message JoinResponse {
   repeated SiloAddress members = 1;
 }
+
+// Peer-to-peer notification: a new silo has joined the cluster.
+message NotifyJoinRequest {
+  SiloAddress silo = 1;
+}
+
+message NotifyJoinResponse {}
+
+// Peer-to-peer notification: a silo has been declared dead.
+message NotifyLeaveRequest {
+  SiloAddress silo = 1;
+}
+
+message NotifyLeaveResponse {}
 
 message PingRequest {
   string silo_id = 1;

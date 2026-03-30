@@ -8,6 +8,12 @@ pub struct Silo {
     directory: Arc<GrainDirectory>,
 }
 
+impl Default for Silo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Silo {
     pub fn builder() -> SiloBuilder {
         SiloBuilder::new()

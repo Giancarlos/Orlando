@@ -4,8 +4,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use orlando_core::{Grain, GrainContext, GrainHandler, Message};
-use orlando_cluster::{ClusterSilo, NetworkMessage};
+use orlando_core::{Grain, GrainActivator, GrainContext, GrainHandler, Message};
+use orlando_cluster::{ClusterSilo, FailureDetectorConfig, NetworkMessage};
 
 // ── Test grain ──────────────────────────────────────────────────
 
@@ -228,4 +228,263 @@ async fn membership_join_and_get_members() {
     assert!(ids.contains(&"newcomer".to_string()));
 
     server.abort();
+}
+
+#[tokio::test]
+async fn failure_detector_removes_dead_silo() {
+    // Start silo A (seed) with fast failure detection
+    let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_a = listener_a.local_addr().unwrap().port();
+    drop(listener_a);
+
+    let silo_a = Arc::new(
+        ClusterSilo::builder()
+            .host("127.0.0.1")
+            .port(port_a)
+            .silo_id("silo-a")
+            .failure_detector_config(FailureDetectorConfig {
+                ping_interval: Duration::from_millis(50),
+                ping_timeout: Duration::from_millis(30),
+                max_missed_pings: 2,
+            })
+            .register::<Counter, Increment>()
+            .register::<Counter, GetCount>()
+            .build(),
+    );
+
+    let silo_a_clone = silo_a.clone();
+    let server_a = tokio::spawn(async move {
+        silo_a_clone.serve().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Start silo B and join silo A
+    let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_b = listener_b.local_addr().unwrap().port();
+    drop(listener_b);
+
+    let silo_b = Arc::new(
+        ClusterSilo::builder()
+            .host("127.0.0.1")
+            .port(port_b)
+            .silo_id("silo-b")
+            .failure_detector_config(FailureDetectorConfig {
+                ping_interval: Duration::from_millis(50),
+                ping_timeout: Duration::from_millis(30),
+                max_missed_pings: 2,
+            })
+            .register::<Counter, Increment>()
+            .register::<Counter, GetCount>()
+            .build(),
+    );
+
+    let silo_b_clone = silo_b.clone();
+    let server_b = tokio::spawn(async move {
+        silo_b_clone.serve().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Both join each other
+    silo_a
+        .join_cluster(&format!("127.0.0.1:{}", port_b))
+        .await
+        .unwrap();
+    silo_b
+        .join_cluster(&format!("127.0.0.1:{}", port_a))
+        .await
+        .unwrap();
+
+    // Gracefully shut down silo B's gRPC server
+    silo_b.shutdown();
+    // Wait for the server task to finish
+    let _ = server_b.await;
+
+    // Wait for failure detection: ping_interval(50ms) * max_missed(2) + margin
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Silo A should have removed silo B from its ring
+    // All grains should now route to silo A (the only survivor)
+    for i in 0..10 {
+        let key = format!("counter-{}", i);
+        let grain = silo_a.get_ref::<Counter>(&key);
+        let result = grain.ask(Increment { amount: 1 }).await;
+        assert!(result.is_ok(), "grain {} should route locally after silo-b death", key);
+    }
+
+    server_a.abort();
+}
+
+#[tokio::test]
+async fn rebalancing_deactivates_misplaced_grains() {
+    // Start silo A alone with some active grains
+    let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_a = listener_a.local_addr().unwrap().port();
+    drop(listener_a);
+
+    let silo_a = Arc::new(
+        ClusterSilo::builder()
+            .host("127.0.0.1")
+            .port(port_a)
+            .silo_id("silo-a")
+            .register::<Counter, Increment>()
+            .register::<Counter, GetCount>()
+            .build(),
+    );
+
+    let silo_a_clone = silo_a.clone();
+    let server_a = tokio::spawn(async move {
+        silo_a_clone.serve().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Activate many grains on silo A (it's the only silo, so all are local)
+    for i in 0..20 {
+        let grain = silo_a.get_ref::<Counter>(&format!("counter-{}", i));
+        grain.ask(Increment { amount: 1 }).await.unwrap();
+    }
+
+    let before_count = silo_a.directory().grain_ids().len();
+    assert_eq!(before_count, 20, "all 20 grains should be active on silo-a");
+
+    // Start silo B and have silo A join it (triggering rebalance on silo A)
+    let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_b = listener_b.local_addr().unwrap().port();
+    drop(listener_b);
+
+    let silo_b = Arc::new(
+        ClusterSilo::builder()
+            .host("127.0.0.1")
+            .port(port_b)
+            .silo_id("silo-b")
+            .register::<Counter, Increment>()
+            .register::<Counter, GetCount>()
+            .build(),
+    );
+
+    let silo_b_clone = silo_b.clone();
+    let _server_b = tokio::spawn(async move {
+        silo_b_clone.serve().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Silo A joins silo B — this adds silo B to A's ring and broadcasts MembershipChange
+    silo_a
+        .join_cluster(&format!("127.0.0.1:{}", port_b))
+        .await
+        .unwrap();
+
+    // Wait for rebalancer to process the membership change
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Some grains should have been deactivated from silo A (rehashed to silo B)
+    let after_count = silo_a.directory().grain_ids().len();
+    assert!(
+        after_count < before_count,
+        "expected fewer grains on silo-a after rebalance: before={}, after={}",
+        before_count,
+        after_count
+    );
+    assert!(
+        after_count > 0,
+        "silo-a should still have some grains (not all rehashed away)"
+    );
+
+    server_a.abort();
+}
+
+#[tokio::test]
+async fn gossip_propagates_join_to_all_members() {
+    use orlando_cluster::proto::membership_client::MembershipClient;
+    use orlando_cluster::proto::GetMembersRequest;
+
+    // Start 3 silos: A, B, C
+    let mut ports = Vec::new();
+    for _ in 0..3 {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        ports.push(l.local_addr().unwrap().port());
+        drop(l);
+    }
+
+    let silo_a = Arc::new(
+        ClusterSilo::builder()
+            .host("127.0.0.1")
+            .port(ports[0])
+            .silo_id("silo-a")
+            .register::<Counter, Increment>()
+            .register::<Counter, GetCount>()
+            .build(),
+    );
+    let silo_b = Arc::new(
+        ClusterSilo::builder()
+            .host("127.0.0.1")
+            .port(ports[1])
+            .silo_id("silo-b")
+            .register::<Counter, Increment>()
+            .register::<Counter, GetCount>()
+            .build(),
+    );
+    let silo_c = Arc::new(
+        ClusterSilo::builder()
+            .host("127.0.0.1")
+            .port(ports[2])
+            .silo_id("silo-c")
+            .register::<Counter, Increment>()
+            .register::<Counter, GetCount>()
+            .build(),
+    );
+
+    // Start all servers
+    let a_clone = silo_a.clone();
+    let _sa = tokio::spawn(async move { a_clone.serve().await.unwrap() });
+    let b_clone = silo_b.clone();
+    let _sb = tokio::spawn(async move { b_clone.serve().await.unwrap() });
+    let c_clone = silo_c.clone();
+    let _sc = tokio::spawn(async move { c_clone.serve().await.unwrap() });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // B joins A — A now knows about B
+    silo_b
+        .join_cluster(&format!("127.0.0.1:{}", ports[0]))
+        .await
+        .unwrap();
+
+    // C joins A — A returns [A, B, C]. C then notifies B about itself.
+    silo_c
+        .join_cluster(&format!("127.0.0.1:{}", ports[0]))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify: B should know about C (learned via gossip NotifyJoin)
+    let mut client_b =
+        MembershipClient::connect(format!("http://127.0.0.1:{}", ports[1]))
+            .await
+            .unwrap();
+    let resp = client_b
+        .get_members(GetMembersRequest {})
+        .await
+        .unwrap();
+    let member_ids: Vec<String> = resp
+        .into_inner()
+        .members
+        .iter()
+        .map(|m| m.silo_id.clone())
+        .collect();
+
+    assert!(
+        member_ids.contains(&"silo-a".to_string()),
+        "silo-b should know about silo-a, got {:?}",
+        member_ids
+    );
+    assert!(
+        member_ids.contains(&"silo-c".to_string()),
+        "silo-b should know about silo-c via gossip, got {:?}",
+        member_ids
+    );
 }

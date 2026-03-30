@@ -2,13 +2,19 @@ use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use orlando_core::{Envelope, GrainActivator, GrainId};
+use orlando_core::{ActivationFactory, Envelope, GrainActivator, GrainId};
 
 use crate::activation::Activation;
 
 #[derive(Debug)]
 pub struct GrainDirectory {
     activations: DashMap<GrainId, Activation>,
+}
+
+impl Default for GrainDirectory {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GrainDirectory {
@@ -48,7 +54,7 @@ impl GrainActivator for GrainDirectory {
     fn get_or_insert(
         &self,
         grain_id: GrainId,
-        create: Box<dyn FnOnce(GrainId) -> (mpsc::Sender<Envelope>, JoinHandle<()>) + Send>,
+        create: ActivationFactory,
     ) -> mpsc::Sender<Envelope> {
         // Atomic: only one thread can win the entry for a given grain_id.
         let entry = self.activations.entry(grain_id.clone());

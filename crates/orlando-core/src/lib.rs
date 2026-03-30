@@ -8,10 +8,10 @@ pub mod mailbox;
 mod message;
 pub mod testing;
 
-pub use envelope::Envelope;
+pub use envelope::{Envelope, HandleFn};
 pub use error::GrainError;
 pub use grain::{Grain, GrainHandler};
-pub use grain_context::{GrainActivator, GrainContext};
+pub use grain_context::{ActivationFactory, GrainActivator, GrainContext};
 pub use grain_id::GrainId;
 pub use grain_ref::GrainRef;
 pub use message::Message;

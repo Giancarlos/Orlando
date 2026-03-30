@@ -27,6 +27,12 @@ pub struct MessageRegistry {
     message_types: HashMap<String, &'static str>,
 }
 
+impl Default for MessageRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageRegistry {
     pub fn new() -> Self {
         Self {

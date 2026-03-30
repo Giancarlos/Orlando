@@ -1,11 +1,12 @@
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use serde::{de::DeserializeOwned, Serialize};
 
 use orlando_core::{Envelope, Grain, GrainError, GrainHandler, GrainRef};
 
+use crate::connection_pool::ConnectionPool;
 use crate::network_message::NetworkMessage;
-use crate::proto::grain_transport_client::GrainTransportClient;
 use crate::proto::InvokeRequest;
 
 pub struct ClusterGrainRef<G: Grain> {
@@ -19,6 +20,7 @@ enum RefInner {
         endpoint: String,
         grain_type: &'static str,
         grain_key: String,
+        pool: Arc<ConnectionPool>,
     },
 }
 
@@ -30,10 +32,12 @@ impl Clone for RefInner {
                 endpoint,
                 grain_type,
                 grain_key,
+                pool,
             } => Self::Remote {
                 endpoint: endpoint.clone(),
                 grain_type,
                 grain_key: grain_key.clone(),
+                pool: pool.clone(),
             },
         }
     }
@@ -60,12 +64,14 @@ impl<G: Grain> ClusterGrainRef<G> {
         endpoint: String,
         grain_type: &'static str,
         grain_key: String,
+        pool: Arc<ConnectionPool>,
     ) -> Self {
         Self {
             inner: RefInner::Remote {
                 endpoint,
                 grain_type,
                 grain_key,
+                pool,
             },
             _marker: PhantomData,
         }
@@ -91,15 +97,16 @@ impl<G: Grain> ClusterGrainRef<G> {
                 endpoint,
                 grain_type,
                 grain_key,
+                pool,
             } => {
                 let payload =
                     bincode::serde::encode_to_vec(&msg, bincode::config::standard())
                         .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;
 
-                let mut client =
-                    GrainTransportClient::connect(format!("http://{}", endpoint))
-                        .await
-                        .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;
+                let mut client = pool
+                    .get_transport(endpoint)
+                    .await
+                    .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;
 
                 let response = client
                     .invoke(InvokeRequest {

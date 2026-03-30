@@ -9,6 +9,9 @@ use crate::grain_id::GrainId;
 use crate::grain_ref::GrainRef;
 use crate::mailbox;
 
+pub type ActivationFactory =
+    Box<dyn FnOnce(GrainId) -> (mpsc::Sender<Envelope>, JoinHandle<()>) + Send>;
+
 /// Trait for the backing store that tracks active grains.
 /// Implemented by GrainDirectory in orlando-runtime.
 pub trait GrainActivator: Send + Sync + 'static {
@@ -29,7 +32,7 @@ pub trait GrainActivator: Send + Sync + 'static {
     fn get_or_insert(
         &self,
         grain_id: GrainId,
-        create: Box<dyn FnOnce(GrainId) -> (mpsc::Sender<Envelope>, JoinHandle<()>) + Send>,
+        create: ActivationFactory,
     ) -> mpsc::Sender<Envelope> {
         if let Some(sender) = self.get_sender(&grain_id) {
             return sender;

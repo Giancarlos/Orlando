@@ -35,6 +35,12 @@ pub struct InMemoryReminderStore {
     entries: Mutex<HashMap<(GrainId, String), ReminderRegistration>>,
 }
 
+impl Default for InMemoryReminderStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryReminderStore {
     pub fn new() -> Self {
         Self {

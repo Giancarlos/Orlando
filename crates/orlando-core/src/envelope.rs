@@ -4,14 +4,16 @@ use std::pin::Pin;
 
 use crate::grain_context::GrainContext;
 
+pub type HandleFn = Box<
+    dyn for<'a> FnOnce(
+            &'a mut (dyn Any + Send),
+            &'a GrainContext,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
+        + Send,
+>;
+
 pub struct Envelope {
-    pub(crate) handle_fn: Box<
-        dyn for<'a> FnOnce(
-                &'a mut (dyn Any + Send),
-                &'a GrainContext,
-            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
-            + Send,
-    >,
+    pub(crate) handle_fn: HandleFn,
 }
 
 impl std::fmt::Debug for Envelope {
@@ -21,15 +23,7 @@ impl std::fmt::Debug for Envelope {
 }
 
 impl Envelope {
-    pub fn new(
-        handle_fn: Box<
-            dyn for<'a> FnOnce(
-                    &'a mut (dyn Any + Send),
-                    &'a GrainContext,
-                ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
-                + Send,
-        >,
-    ) -> Self {
+    pub fn new(handle_fn: HandleFn) -> Self {
         Self { handle_fn }
     }
 

@@ -17,5 +17,8 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
 
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+
 [build-dependencies]
 tonic-build = "0.12"

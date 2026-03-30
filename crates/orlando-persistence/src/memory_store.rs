@@ -13,6 +13,12 @@ pub struct InMemoryStateStore {
     data: Mutex<HashMap<GrainId, Vec<u8>>>,
 }
 
+impl Default for InMemoryStateStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryStateStore {
     pub fn new() -> Self {
         Self {
