@@ -7,7 +7,9 @@ mod hash_ring;
 mod membership;
 mod message_registry;
 mod network_message;
+mod placement;
 mod rebalancer;
+pub(crate) mod swim;
 mod transport;
 
 pub mod proto {
@@ -22,6 +24,7 @@ pub use failure_detector::{FailureDetector, FailureDetectorConfig, MembershipCha
 pub use hash_ring::{HashRing, SiloAddress};
 pub use membership::MembershipService;
 pub use message_registry::MessageRegistry;
-pub use network_message::NetworkMessage;
+pub use network_message::{Encoding, NetworkMessage};
+pub use placement::{HashBasedPlacement, PlacementStrategy, PreferLocalPlacement, RandomPlacement};
 pub use rebalancer::Rebalancer;
 pub use transport::GrainTransportService;

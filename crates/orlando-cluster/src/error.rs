@@ -22,4 +22,7 @@ pub enum ClusterError {
 
     #[error("handler error: {0}")]
     HandlerError(String),
+
+    #[error("unsupported encoding for message {0}: {1}")]
+    UnsupportedEncoding(String, String),
 }

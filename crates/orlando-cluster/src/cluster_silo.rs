@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{broadcast, mpsc, watch};
 
-use orlando_core::{Grain, GrainActivator, GrainHandler, GrainId, mailbox};
+use orlando_core::{Grain, GrainActivator, GrainHandler, GrainId, mailbox, reentrant_mailbox};
 use orlando_runtime::GrainDirectory;
 
 use crate::cluster_grain_ref::ClusterGrainRef;
@@ -12,6 +12,7 @@ use crate::connection_pool::ConnectionPool;
 use crate::error::ClusterError;
 use crate::failure_detector::{FailureDetector, FailureDetectorConfig, MembershipChange};
 use crate::hash_ring::{HashRing, SiloAddress};
+use crate::placement::{HashBasedPlacement, PlacementStrategy};
 use crate::membership::MembershipService;
 use crate::message_registry::MessageRegistry;
 use crate::network_message::NetworkMessage;
@@ -30,6 +31,8 @@ pub struct ClusterSilo {
     change_tx: broadcast::Sender<MembershipChange>,
     failure_detector_config: FailureDetectorConfig,
     shutdown_tx: watch::Sender<bool>,
+    swim_state: Arc<tokio::sync::Mutex<crate::swim::SwimState>>,
+    placement: Arc<dyn PlacementStrategy>,
 }
 
 impl ClusterSilo {
@@ -60,27 +63,26 @@ impl ClusterSilo {
     /// (local dispatch) or a remote silo (gRPC dispatch via connection pool).
     pub fn get_ref<G: Grain>(&self, key: impl Into<String>) -> ClusterGrainRef<G> {
         let key = key.into();
-        let grain_key = format!("{}/{}", std::any::type_name::<G>(), key);
+        let grain_type = G::grain_type_name();
 
         let ring = self.ring.read().expect("ring lock poisoned");
-        match ring.get(&grain_key) {
-            Some(target) if target.silo_id == self.local_addr.silo_id => {
-                drop(ring);
+        let target = self.placement.place(grain_type, &key, &self.local_addr.silo_id, &ring);
+        drop(ring);
+
+        match target {
+            Some(ref t) if t.silo_id == self.local_addr.silo_id => {
                 let sender = self.local_activate::<G>(&key);
                 ClusterGrainRef::local(sender)
             }
-            Some(target) => {
-                let endpoint = target.endpoint();
-                drop(ring);
+            Some(t) => {
                 ClusterGrainRef::remote(
-                    endpoint,
-                    std::any::type_name::<G>(),
+                    t.endpoint(),
+                    grain_type,
                     key,
                     self.pool.clone(),
                 )
             }
             None => {
-                drop(ring);
                 let sender = self.local_activate::<G>(&key);
                 ClusterGrainRef::local(sender)
             }
@@ -92,7 +94,7 @@ impl ClusterSilo {
         key: &str,
     ) -> mpsc::Sender<orlando_core::Envelope> {
         let grain_id = GrainId {
-            type_name: std::any::type_name::<G>(),
+            type_name: G::grain_type_name(),
             key: key.to_string(),
         };
         let activator: Arc<dyn GrainActivator> = self.directory.clone();
@@ -100,10 +102,19 @@ impl ClusterSilo {
         activator.get_or_insert(
             grain_id,
             Box::new(move |id| {
-                let (tx, rx) = mpsc::channel(256);
-                let task = tokio::spawn(async move {
-                    mailbox::run_mailbox::<G>(id, rx, activator_for_mailbox).await;
-                });
+                let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
+                let task = if G::reentrant() {
+                    tokio::spawn(async move {
+                        reentrant_mailbox::run_reentrant_mailbox::<G>(
+                            id, rx, activator_for_mailbox,
+                        )
+                        .await;
+                    })
+                } else {
+                    tokio::spawn(async move {
+                        mailbox::run_mailbox::<G>(id, rx, activator_for_mailbox).await;
+                    })
+                };
                 (tx, task)
             }),
         )
@@ -154,6 +165,23 @@ impl ClusterSilo {
             }
         }
 
+        // Add members to SWIM state
+        {
+            let mut swim = self.swim_state.lock().await;
+            for silo in &members {
+                if silo.silo_id != self.local_addr.silo_id {
+                    swim.members.insert(
+                        silo.silo_id.clone(),
+                        crate::swim::SwimMember {
+                            addr: silo.clone(),
+                            status: crate::swim::MemberStatus::Alive,
+                            incarnation: 0,
+                        },
+                    );
+                }
+            }
+        }
+
         // Announce ourselves to every peer (except the seed, which already knows)
         for member in &members {
             if member.silo_id == self.local_addr.silo_id {
@@ -185,22 +213,32 @@ impl ClusterSilo {
         let transport = GrainTransportService::new(
             self.registry.clone(),
             self.directory.clone() as Arc<dyn GrainActivator>,
+            self.ring.clone(),
+            self.pool.clone(),
+            self.local_addr.silo_id.clone(),
         );
+
+        // Create failure detector using the shared SWIM state
+        let detector = FailureDetector::with_state(
+            self.failure_detector_config.clone(),
+            self.ring.clone(),
+            self.pool.clone(),
+            self.change_tx.clone(),
+            self.swim_state.clone(),
+            self.shutdown_tx.subscribe(),
+        );
+
+        let swim_state = self.swim_state.clone();
 
         let membership = MembershipService::new(
             self.ring.clone(),
             self.local_addr.clone(),
             self.change_tx.clone(),
+            self.pool.clone(),
+            swim_state,
+            self.failure_detector_config.gossip_fanout,
         );
 
-        // Spawn failure detector
-        let detector = FailureDetector::new(
-            self.failure_detector_config.clone(),
-            self.ring.clone(),
-            self.pool.clone(),
-            self.local_addr.silo_id.clone(),
-            self.change_tx.clone(),
-        );
         tokio::spawn(detector.run());
 
         // Spawn rebalancer
@@ -236,6 +274,7 @@ pub struct ClusterSiloBuilder {
     registry: MessageRegistry,
     virtual_nodes: u32,
     failure_detector_config: FailureDetectorConfig,
+    placement: Option<Arc<dyn PlacementStrategy>>,
 }
 
 impl ClusterSiloBuilder {
@@ -247,6 +286,7 @@ impl ClusterSiloBuilder {
             registry: MessageRegistry::new(),
             virtual_nodes: 150,
             failure_detector_config: FailureDetectorConfig::default(),
+            placement: None,
         }
     }
 
@@ -272,6 +312,12 @@ impl ClusterSiloBuilder {
 
     pub fn failure_detector_config(mut self, config: FailureDetectorConfig) -> Self {
         self.failure_detector_config = config;
+        self
+    }
+
+    /// Set the grain placement strategy. Defaults to `HashBasedPlacement`.
+    pub fn placement(mut self, strategy: Arc<dyn PlacementStrategy>) -> Self {
+        self.placement = Some(strategy);
         self
     }
 
@@ -303,6 +349,14 @@ impl ClusterSiloBuilder {
         let (change_tx, _) = broadcast::channel(64);
         let (shutdown_tx, _) = watch::channel(false);
 
+        let swim_state = Arc::new(tokio::sync::Mutex::new(
+            crate::swim::SwimState::new(local_addr.clone()),
+        ));
+
+        let placement = self
+            .placement
+            .unwrap_or_else(|| Arc::new(HashBasedPlacement));
+
         ClusterSilo {
             local_addr,
             directory: Arc::new(GrainDirectory::new()),
@@ -312,6 +366,8 @@ impl ClusterSiloBuilder {
             change_tx,
             failure_detector_config: self.failure_detector_config,
             shutdown_tx,
+            swim_state,
+            placement,
         }
     }
 }

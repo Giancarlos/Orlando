@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -6,37 +5,79 @@ use tokio::sync::broadcast;
 
 use crate::connection_pool::ConnectionPool;
 use crate::hash_ring::{HashRing, SiloAddress};
-use crate::proto::{NotifyLeaveRequest, PingRequest, SiloAddress as ProtoSiloAddress};
+use crate::swim::{self, SwimState};
 
+/// A membership change event broadcast to subscribers (e.g., the rebalancer).
 #[derive(Clone, Debug)]
 pub enum MembershipChange {
     SiloJoined(SiloAddress),
     SiloLeft(SiloAddress),
 }
 
+/// Configuration for the SWIM-based failure detector.
+///
+/// Replaces the old simple ping-count model with the full SWIM protocol:
+/// protocol periods, indirect pings, suspicion with timeout, and gossip
+/// piggybacking.
 #[derive(Clone, Debug)]
 pub struct FailureDetectorConfig {
-    pub ping_interval: Duration,
+    /// How often the protocol runs a probe cycle.
+    pub protocol_period: Duration,
+    /// Timeout for a direct ping response.
     pub ping_timeout: Duration,
-    pub max_missed_pings: u32,
+    /// Number of random peers to ask for an indirect ping when a direct ping fails.
+    pub ping_req_count: usize,
+    /// How long a member stays in "suspect" state before being declared dead.
+    pub suspect_timeout: Duration,
+    /// Maximum number of gossip updates piggybacked per protocol message.
+    pub gossip_fanout: usize,
 }
 
 impl Default for FailureDetectorConfig {
     fn default() -> Self {
         Self {
-            ping_interval: Duration::from_secs(2),
+            protocol_period: Duration::from_secs(2),
             ping_timeout: Duration::from_secs(1),
-            max_missed_pings: 3,
+            ping_req_count: 3,
+            suspect_timeout: Duration::from_secs(5),
+            gossip_fanout: 6,
         }
     }
 }
 
+impl FailureDetectorConfig {
+    /// Migrate from the pre-SWIM config fields.
+    ///
+    /// Maps old field names to the SWIM equivalents:
+    /// - `ping_interval` -> `protocol_period`
+    /// - `ping_timeout` -> `ping_timeout` (unchanged)
+    /// - `max_missed_pings` -> `suspect_timeout` (computed as `ping_interval * max_missed_pings`)
+    ///
+    /// New SWIM-specific fields (`ping_req_count`, `gossip_fanout`) use defaults.
+    pub fn from_legacy(
+        ping_interval: Duration,
+        ping_timeout: Duration,
+        max_missed_pings: u32,
+    ) -> Self {
+        Self {
+            protocol_period: ping_interval,
+            ping_timeout,
+            suspect_timeout: ping_interval * max_missed_pings,
+            ..Default::default()
+        }
+    }
+}
+
+/// SWIM-based failure detector. Runs as a background task that periodically
+/// probes random cluster members using direct pings, indirect pings, and
+/// a suspicion mechanism before declaring members dead.
 pub struct FailureDetector {
     config: FailureDetectorConfig,
     ring: Arc<RwLock<HashRing>>,
     pool: Arc<ConnectionPool>,
-    local_silo_id: String,
     change_tx: broadcast::Sender<MembershipChange>,
+    swim_state: Arc<tokio::sync::Mutex<SwimState>>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl FailureDetector {
@@ -44,103 +85,55 @@ impl FailureDetector {
         config: FailureDetectorConfig,
         ring: Arc<RwLock<HashRing>>,
         pool: Arc<ConnectionPool>,
-        local_silo_id: String,
+        local_addr: SiloAddress,
         change_tx: broadcast::Sender<MembershipChange>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Self {
+        let swim_state = Arc::new(tokio::sync::Mutex::new(SwimState::new(local_addr)));
+        Self {
+            config,
+            ring,
+            pool,
+            change_tx,
+            swim_state,
+            shutdown_rx,
+        }
+    }
+
+    /// Create with an existing shared SWIM state.
+    pub fn with_state(
+        config: FailureDetectorConfig,
+        ring: Arc<RwLock<HashRing>>,
+        pool: Arc<ConnectionPool>,
+        change_tx: broadcast::Sender<MembershipChange>,
+        swim_state: Arc<tokio::sync::Mutex<SwimState>>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
             config,
             ring,
             pool,
-            local_silo_id,
             change_tx,
+            swim_state,
+            shutdown_rx,
         }
     }
 
+    /// Get a reference to the shared SWIM state for use by the membership service.
+    pub fn swim_state(&self) -> Arc<tokio::sync::Mutex<SwimState>> {
+        self.swim_state.clone()
+    }
+
+    /// Run the SWIM protocol loop (consumes self).
     pub async fn run(self) {
-        let mut missed: HashMap<String, u32> = HashMap::new();
-
-        loop {
-            tokio::time::sleep(self.config.ping_interval).await;
-
-            let members = {
-                let ring = self.ring.read().expect("ring lock poisoned");
-                ring.members()
-            };
-
-            for member in &members {
-                if member.silo_id == self.local_silo_id {
-                    continue;
-                }
-
-                let alive = self.ping_silo(member).await;
-
-                if alive {
-                    missed.remove(&member.silo_id);
-                } else {
-                    let count = missed.entry(member.silo_id.clone()).or_insert(0);
-                    *count += 1;
-
-                    if *count >= self.config.max_missed_pings {
-                        tracing::warn!(
-                            silo_id = %member.silo_id,
-                            missed = *count,
-                            "silo declared dead, removing from cluster"
-                        );
-
-                        {
-                            let mut ring = self.ring.write().expect("ring lock poisoned");
-                            ring.remove(member);
-                        }
-
-                        self.pool.remove(&member.endpoint());
-                        missed.remove(&member.silo_id);
-
-                        let _ = self.change_tx.send(MembershipChange::SiloLeft(member.clone()));
-
-                        // Gossip: notify remaining peers about the dead silo
-                        self.notify_peers_of_leave(member, &members).await;
-                    }
-                }
-            }
-        }
-    }
-
-    async fn notify_peers_of_leave(&self, dead: &SiloAddress, members: &[SiloAddress]) {
-        let proto_dead = ProtoSiloAddress {
-            host: dead.host.clone(),
-            port: dead.port as u32,
-            silo_id: dead.silo_id.clone(),
-        };
-
-        for peer in members {
-            if peer.silo_id == self.local_silo_id || peer.silo_id == dead.silo_id {
-                continue;
-            }
-            if let Ok(mut client) = self.pool.get_membership(&peer.endpoint()).await {
-                let _ = client
-                    .notify_leave(NotifyLeaveRequest {
-                        silo: Some(proto_dead.clone()),
-                    })
-                    .await;
-            }
-        }
-    }
-
-    async fn ping_silo(&self, silo: &SiloAddress) -> bool {
-        let client = self.pool.get_membership(&silo.endpoint()).await;
-        let mut client = match client {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        let result = tokio::time::timeout(
-            self.config.ping_timeout,
-            client.ping(PingRequest {
-                silo_id: self.local_silo_id.clone(),
-            }),
+        swim::run_swim_protocol(
+            self.config,
+            self.swim_state,
+            self.ring,
+            self.pool,
+            self.change_tx,
+            self.shutdown_rx,
         )
         .await;
-
-        matches!(result, Ok(Ok(_)))
     }
 }

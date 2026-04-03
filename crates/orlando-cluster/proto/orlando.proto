@@ -1,6 +1,12 @@
 syntax = "proto3";
 package orlando.cluster;
 
+// Payload encoding for grain messages.
+enum Encoding {
+  BINCODE = 0;   // Rust-native, used for silo-to-silo traffic (default)
+  PROTOBUF = 1;  // Cross-language, used by external clients
+}
+
 // Forwards a serialized grain message to the owning silo.
 service GrainTransport {
   rpc Invoke(InvokeRequest) returns (InvokeResponse);
@@ -11,19 +17,22 @@ message InvokeRequest {
   string grain_key = 2;
   string message_type = 3;
   bytes payload = 4;
+  Encoding encoding = 5;
 }
 
 message InvokeResponse {
   bytes payload = 1;
   string error = 2;
+  Encoding encoding = 3;
 }
 
-// Membership protocol with gossip propagation.
+// Membership protocol with SWIM-style failure detection and gossip.
 service Membership {
   rpc Join(JoinRequest) returns (JoinResponse);
   rpc NotifyJoin(NotifyJoinRequest) returns (NotifyJoinResponse);
   rpc NotifyLeave(NotifyLeaveRequest) returns (NotifyLeaveResponse);
   rpc Ping(PingRequest) returns (PingResponse);
+  rpc PingReq(PingReqRequest) returns (PingReqResponse);
   rpc GetMembers(GetMembersRequest) returns (GetMembersResponse);
 }
 
@@ -57,10 +66,38 @@ message NotifyLeaveResponse {}
 
 message PingRequest {
   string silo_id = 1;
+  repeated GossipEntry gossip = 2;
 }
 
 message PingResponse {
   string silo_id = 1;
+  repeated GossipEntry gossip = 2;
+}
+
+// Indirect ping: ask a peer to ping a target on your behalf (SWIM protocol).
+message PingReqRequest {
+  SiloAddress target = 1;
+  string requester_silo_id = 2;
+  repeated GossipEntry gossip = 3;
+}
+
+message PingReqResponse {
+  bool target_alive = 1;
+  repeated GossipEntry gossip = 2;
+}
+
+// Gossip update piggybacked on protocol messages.
+message GossipEntry {
+  enum UpdateType {
+    ALIVE = 0;
+    SUSPECT = 1;
+    DEAD = 2;
+    JOIN = 3;
+  }
+  UpdateType update_type = 1;
+  SiloAddress silo = 2;
+  uint64 incarnation = 3;
+  string reported_by = 4;
 }
 
 message GetMembersRequest {}

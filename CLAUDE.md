@@ -403,3 +403,24 @@ rtk init --global       # Add RTK to ~/.claude/CLAUDE.md
 
 Overall average: **60-90% token reduction** on common development operations.
 <!-- /rtk-instructions -->
+
+
+
+## Approach
+- Think before acting. Read existing files before writing code.
+- Be concise in output but thorough in reasoning.
+- Prefer editing over rewriting whole files.
+- Do not re-read files you have already read unless the file may have changed.
+- Test your code before declaring done, ensure it compiles.
+- No sycophantic openers or closing fluff.
+- Keep solutions simple and direct, consider clean code pinciples to keep code maintainable, comments are allowed.
+- If unsure: say so. Never guess or invent file paths, you should always use rigrep or rg to search through code, it is faster than find or grep and tells you the file paths, USE RIPGREP.
+- User instructions always override this file.
+
+## Efficiency
+- Read before writing. Understand the problem before coding, review code and check OFFICIAL documentation ONLY, no fringe blogs or websites.
+- No redundant file reads. Read each file once, UNLESS its been changed numerous times.
+- One focused coding pass. Avoid write-delete-rewrite cycles, think like a Staff Level Engineer at SpaceX building mission critical software that could kill millions if it fails, consider performance, security and stability without compromising on any.
+- Test once, fix if needed, verify once. No unnecessary iterations. If fix still doesn't work, review OFFICIAL documentation, or relevant code within the codebase for clues.
+- Budget: 50 tool calls maximum. Work efficiently, I am very poor.
+

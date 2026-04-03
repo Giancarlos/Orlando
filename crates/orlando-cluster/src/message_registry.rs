@@ -6,17 +6,18 @@ use std::sync::Arc;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::mpsc;
 
-use orlando_core::{GrainActivator, GrainHandler, GrainId, GrainRef, mailbox};
+use orlando_core::{GrainActivator, GrainHandler, GrainId, GrainRef, mailbox, reentrant_mailbox};
 
 use crate::error::ClusterError;
-use crate::network_message::NetworkMessage;
+use crate::network_message::{Encoding, NetworkMessage};
 
 type DispatchFn = Arc<
     dyn Fn(
             String,
             Vec<u8>,
+            Encoding,
             Arc<dyn GrainActivator>,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ClusterError>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = Result<(Vec<u8>, Encoding), ClusterError>> + Send>>
         + Send
         + Sync,
 >;
@@ -53,7 +54,7 @@ impl MessageRegistry {
         M: NetworkMessage,
         M::Result: Serialize + DeserializeOwned,
     {
-        let grain_type: &'static str = std::any::type_name::<G>();
+        let grain_type: &'static str = G::grain_type_name();
         let message_type: &'static str = M::message_type_name();
 
         self.grain_types
@@ -62,13 +63,28 @@ impl MessageRegistry {
             .insert(message_type.to_string(), message_type);
 
         let dispatch: DispatchFn = Arc::new(
-            move |key: String, payload: Vec<u8>, activator: Arc<dyn GrainActivator>| {
+            move |key: String,
+                  payload: Vec<u8>,
+                  encoding: Encoding,
+                  activator: Arc<dyn GrainActivator>| {
                 Box::pin(async move {
-                    let (msg, _): (M, _) = bincode::serde::decode_from_slice(
-                        &payload,
-                        bincode::config::standard(),
-                    )
-                    .map_err(|e| ClusterError::Deserialization(e.to_string()))?;
+                    // Deserialize based on encoding
+                    let msg: M = match encoding {
+                        Encoding::Bincode => {
+                            let (msg, _) = bincode::serde::decode_from_slice(
+                                &payload,
+                                bincode::config::standard(),
+                            )
+                            .map_err(|e| ClusterError::Deserialization(e.to_string()))?;
+                            msg
+                        }
+                        Encoding::Protobuf => M::decode_proto(&payload).ok_or_else(|| {
+                            ClusterError::UnsupportedEncoding(
+                                M::message_type_name().to_string(),
+                                "protobuf not supported for this message type".to_string(),
+                            )
+                        })?,
+                    };
 
                     let grain_id = GrainId {
                         type_name: grain_type,
@@ -79,10 +95,19 @@ impl MessageRegistry {
                     let sender = activator.get_or_insert(
                         grain_id,
                         Box::new(move |id| {
-                            let (tx, rx) = mpsc::channel(256);
-                            let task = tokio::spawn(async move {
-                                mailbox::run_mailbox::<G>(id, rx, activator_for_mailbox).await;
-                            });
+                            let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
+                            let task = if G::reentrant() {
+                                tokio::spawn(async move {
+                                    reentrant_mailbox::run_reentrant_mailbox::<G>(
+                                        id, rx, activator_for_mailbox,
+                                    )
+                                    .await;
+                                })
+                            } else {
+                                tokio::spawn(async move {
+                                    mailbox::run_mailbox::<G>(id, rx, activator_for_mailbox).await;
+                                })
+                            };
                             (tx, task)
                         }),
                     );
@@ -93,8 +118,23 @@ impl MessageRegistry {
                         .await
                         .map_err(|e| ClusterError::HandlerError(e.to_string()))?;
 
-                    bincode::serde::encode_to_vec(&result, bincode::config::standard())
-                        .map_err(|e| ClusterError::Serialization(e.to_string()))
+                    // Serialize response in the same encoding
+                    let response_bytes = match encoding {
+                        Encoding::Bincode => {
+                            bincode::serde::encode_to_vec(&result, bincode::config::standard())
+                                .map_err(|e| ClusterError::Serialization(e.to_string()))?
+                        }
+                        Encoding::Protobuf => {
+                            M::encode_result_proto(&result).ok_or_else(|| {
+                                ClusterError::UnsupportedEncoding(
+                                    M::message_type_name().to_string(),
+                                    "protobuf not supported for result type".to_string(),
+                                )
+                            })?
+                        }
+                    };
+
+                    Ok((response_bytes, encoding))
                 })
             },
         );
@@ -109,8 +149,9 @@ impl MessageRegistry {
         grain_key: String,
         message_type: &str,
         payload: Vec<u8>,
+        encoding: Encoding,
         activator: Arc<dyn GrainActivator>,
-    ) -> Result<Vec<u8>, ClusterError> {
+    ) -> Result<(Vec<u8>, Encoding), ClusterError> {
         let type_name = self
             .grain_types
             .get(grain_type)
@@ -128,6 +169,6 @@ impl MessageRegistry {
                 ClusterError::UnknownMessageType(format!("{}::{}", grain_type, message_type))
             })?;
 
-        handler(grain_key, payload, activator).await
+        handler(grain_key, payload, encoding, activator).await
     }
 }
