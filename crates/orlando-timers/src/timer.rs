@@ -52,9 +52,10 @@ where
                 _ = interval.tick() => {
                     let tick_name = name.clone();
                     let envelope = Envelope::new(Box::new(move |state_any, ctx| {
-                        let state = state_any
-                            .downcast_mut::<G::State>()
-                            .expect("grain state type mismatch");
+                        let Some(state) = state_any.downcast_mut::<G::State>() else {
+                            tracing::error!("grain state type mismatch in timer tick — dropped");
+                            return Box::pin(async {});
+                        };
                         let tick = TimerTick { name: tick_name };
                         Box::pin(async move {
                             <G as GrainHandler<TimerTick>>::handle(state, tick, ctx).await;

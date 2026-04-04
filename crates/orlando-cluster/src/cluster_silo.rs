@@ -52,9 +52,19 @@ impl ClusterSilo {
         &self.pool
     }
 
-    /// Signal the gRPC server to shut down gracefully.
+    /// Signal the gRPC server and SWIM task to shut down.
+    /// Does NOT drain active grains — use `shutdown_and_drain()` for graceful shutdown.
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
+    }
+
+    /// Gracefully shut down: drain all active grains (triggering on_deactivate
+    /// and state persistence), then stop the gRPC server and SWIM task.
+    pub async fn shutdown_and_drain(&self) {
+        tracing::info!("starting graceful shutdown");
+        self.directory.drain().await;
+        let _ = self.shutdown_tx.send(true);
+        tracing::info!("graceful shutdown complete");
     }
 
     /// Get a cluster-aware grain reference.

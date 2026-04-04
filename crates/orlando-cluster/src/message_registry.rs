@@ -16,6 +16,7 @@ type DispatchFn = Arc<
             String,
             Vec<u8>,
             Encoding,
+            HashMap<String, String>,
             Arc<dyn GrainActivator>,
         ) -> Pin<Box<dyn Future<Output = Result<(Vec<u8>, Encoding), ClusterError>> + Send>>
         + Send
@@ -66,6 +67,7 @@ impl MessageRegistry {
             move |key: String,
                   payload: Vec<u8>,
                   encoding: Encoding,
+                  _request_context: HashMap<String, String>,
                   activator: Arc<dyn GrainActivator>| {
                 Box::pin(async move {
                     // Deserialize based on encoding
@@ -143,6 +145,7 @@ impl MessageRegistry {
     }
 
     /// Dispatch an incoming remote call to the registered handler.
+    #[allow(clippy::too_many_arguments)]
     pub async fn dispatch(
         &self,
         grain_type: &str,
@@ -150,6 +153,7 @@ impl MessageRegistry {
         message_type: &str,
         payload: Vec<u8>,
         encoding: Encoding,
+        request_context: HashMap<String, String>,
         activator: Arc<dyn GrainActivator>,
     ) -> Result<(Vec<u8>, Encoding), ClusterError> {
         let type_name = self
@@ -169,6 +173,6 @@ impl MessageRegistry {
                 ClusterError::UnknownMessageType(format!("{}::{}", grain_type, message_type))
             })?;
 
-        handler(grain_key, payload, encoding, activator).await
+        handler(grain_key, payload, encoding, request_context, activator).await
     }
 }

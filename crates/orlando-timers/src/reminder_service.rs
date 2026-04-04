@@ -76,9 +76,10 @@ impl ReminderService {
                 );
 
                 let envelope = Envelope::new(Box::new(move |state_any, ctx| {
-                    let state = state_any
-                        .downcast_mut::<G::State>()
-                        .expect("grain state type mismatch");
+                    let Some(state) = state_any.downcast_mut::<G::State>() else {
+                        tracing::error!("grain state type mismatch in reminder — dropped");
+                        return Box::pin(async {});
+                    };
                     let tick = ReminderTick { name };
                     Box::pin(async move {
                         <G as GrainHandler<ReminderTick>>::handle(state, tick, ctx).await;

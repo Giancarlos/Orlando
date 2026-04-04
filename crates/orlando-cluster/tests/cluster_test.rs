@@ -577,6 +577,7 @@ async fn gateway_forwards_to_correct_silo() {
                 message_type: "Increment".to_string(),
                 payload,
                 encoding: 0, // bincode
+                request_context: std::collections::HashMap::new(),
             })
             .await
             .unwrap();
@@ -678,6 +679,7 @@ async fn gateway_forwards_protobuf_to_correct_silo() {
                 message_type: "Increment".to_string(),
                 payload,
                 encoding: 0,
+                    request_context: std::collections::HashMap::new(),
             })
             .await
             .unwrap();

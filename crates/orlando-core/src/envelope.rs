@@ -67,9 +67,10 @@ where
             move |state_any: &mut (dyn Any + Send), ctx: &GrainContext|
                 -> Pin<Box<dyn Future<Output = ()> + Send + '_>>
             {
-                let state = state_any
-                    .downcast_mut::<G::State>()
-                    .expect("grain state type mismatch");
+                let Some(state) = state_any.downcast_mut::<G::State>() else {
+                    tracing::error!("grain state type mismatch — message dropped");
+                    return Box::pin(async {});
+                };
                 Box::pin(async move {
                     let result = <G as GrainHandler<M>>::handle(state, msg, ctx).await;
                     let _ = tx.send(Box::new(result) as Box<dyn Any + Send>);

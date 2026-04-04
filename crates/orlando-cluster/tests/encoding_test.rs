@@ -174,6 +174,7 @@ async fn protobuf_round_trip_via_grpc() {
             message_type: "ProtoIncrement".to_string(),
             payload,
             encoding: 1, // PROTOBUF
+            request_context: std::collections::HashMap::new(),
         })
         .await
         .unwrap();
@@ -223,6 +224,7 @@ async fn protobuf_to_bincode_only_message_returns_error() {
             message_type: "BincodeIncrement".to_string(),
             payload: vec![1, 2, 3], // garbage protobuf bytes
             encoding: 1,            // PROTOBUF
+            request_context: std::collections::HashMap::new(),
         })
         .await
         .unwrap();
@@ -273,6 +275,7 @@ async fn protobuf_multiple_calls_accumulate_state() {
                 message_type: "ProtoIncrement".to_string(),
                 payload,
                 encoding: 1,
+                    request_context: std::collections::HashMap::new(),
             })
             .await
             .unwrap();
@@ -290,6 +293,7 @@ async fn protobuf_multiple_calls_accumulate_state() {
             message_type: "ProtoIncrement".to_string(),
             payload,
             encoding: 1,
+                    request_context: std::collections::HashMap::new(),
         })
         .await
         .unwrap();

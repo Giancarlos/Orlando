@@ -30,6 +30,54 @@ impl GrainDirectory {
     pub fn remove(&self, id: &GrainId) -> Option<Activation> {
         self.activations.remove(id).map(|(_, a)| a)
     }
+
+    /// Gracefully drain all active grains.
+    ///
+    /// Drops all mailbox senders (causing each grain's mailbox loop to exit
+    /// and call `on_deactivate`), then awaits all grain tasks to completion.
+    /// Worker pools are also drained.
+    pub async fn drain(&self) {
+        // Collect all activations and drop their senders
+        let activations: Vec<(GrainId, Activation)> = self
+            .activations
+            .iter()
+            .map(|e| (e.key().clone(), e.value().grain_id.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|(id, _)| self.activations.remove(&id))
+            .collect();
+
+        // Drop senders to signal mailbox loops to exit
+        let mut tasks = Vec::new();
+        for (_, activation) in activations {
+            drop(activation.sender);
+            tasks.push(activation.task);
+        }
+
+        // Also drain worker pools
+        let pool_keys: Vec<GrainId> = self
+            .worker_pools
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        for key in pool_keys {
+            if let Some((_, pool)) = self.worker_pools.remove(&key) {
+                for sender in pool.senders {
+                    drop(sender);
+                }
+                for task in pool.tasks {
+                    tasks.push(task);
+                }
+            }
+        }
+
+        // Wait for all grain tasks to complete (on_deactivate + persistence)
+        for task in tasks {
+            let _ = task.await;
+        }
+
+        tracing::info!("all grains drained");
+    }
 }
 
 impl GrainActivator for GrainDirectory {

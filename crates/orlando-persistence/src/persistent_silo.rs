@@ -246,9 +246,13 @@ where
             move |state_any: &mut (dyn Any + Send), ctx: &GrainContext|
                 -> Pin<Box<dyn Future<Output = ()> + Send + '_>>
             {
-                let state = state_any
-                    .downcast_mut::<G::State>()
-                    .expect("grain state type mismatch");
+                let Some(state) = state_any.downcast_mut::<G::State>() else {
+                    tracing::error!("grain state type mismatch in transactional handler — dropped");
+                    let _ = tx.send(Box::new(Err::<M::Result, String>(
+                        "grain state type mismatch".to_string(),
+                    )) as Box<dyn Any + Send>);
+                    return Box::pin(async {});
+                };
 
                 // Snapshot before handler runs
                 let snapshot = state.clone();

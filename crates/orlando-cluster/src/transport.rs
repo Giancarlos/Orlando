@@ -74,7 +74,7 @@ impl GrainTransport for GrainTransportService {
                 .await
                 .map_err(|e| Status::unavailable(e.to_string()))?;
 
-            // Forward the request as-is to the owning silo
+            // Forward the request as-is (including request_context) to the owning silo
             let response = client
                 .invoke(InvokeRequest {
                     grain_type: req.grain_type,
@@ -82,6 +82,7 @@ impl GrainTransport for GrainTransportService {
                     message_type: req.message_type,
                     payload: req.payload,
                     encoding: req.encoding,
+                    request_context: req.request_context,
                 })
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
@@ -89,7 +90,7 @@ impl GrainTransport for GrainTransportService {
             return Ok(response);
         }
 
-        // Local dispatch
+        // Local dispatch — pass request context through to the grain handler
         match self
             .registry
             .dispatch(
@@ -98,6 +99,7 @@ impl GrainTransport for GrainTransportService {
                 &req.message_type,
                 req.payload,
                 encoding,
+                req.request_context,
                 self.activator.clone(),
             )
             .await
