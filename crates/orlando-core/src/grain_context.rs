@@ -107,9 +107,16 @@ impl GrainContext {
     }
 
     /// Access the request context (trace IDs, correlation IDs, etc.).
-    /// Propagated automatically through grain-to-grain calls.
-    pub fn request_context(&self) -> &RequestContext {
-        &self.request_context
+    ///
+    /// Checks the task-local first (set by cross-silo transport), then falls
+    /// back to the context stored on this `GrainContext`.
+    pub fn request_context(&self) -> RequestContext {
+        let task_local = RequestContext::current();
+        if !task_local.is_empty() {
+            task_local
+        } else {
+            self.request_context.clone()
+        }
     }
 
     /// Create a new context with an updated request context.

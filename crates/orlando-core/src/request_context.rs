@@ -48,4 +48,29 @@ impl RequestContext {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.values.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
+
+    /// Convert to a HashMap for serialization (e.g., proto map field).
+    pub fn to_map(&self) -> HashMap<String, String> {
+        (*self.values).clone()
+    }
+}
+
+tokio::task_local! {
+    /// Task-local request context for cross-silo propagation.
+    /// Set by the transport layer before dispatching a grain call,
+    /// read by handlers via `RequestContext::current()`.
+    static CURRENT: RequestContext;
+}
+
+impl RequestContext {
+    /// Get the current request context from the task-local, if set.
+    /// Returns an empty context if none is set.
+    pub fn current() -> Self {
+        CURRENT.try_with(|c| c.clone()).unwrap_or_default()
+    }
+
+    /// Run a future with this request context set as the task-local.
+    pub async fn scope<F: std::future::Future>(self, f: F) -> F::Output {
+        CURRENT.scope(self, f).await
+    }
 }

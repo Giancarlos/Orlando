@@ -59,18 +59,9 @@ impl PersistentSilo {
             grain_id,
             Box::new(move |id| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
-                let task = if G::reentrant() {
-                    tokio::spawn(async move {
-                        persistent_mailbox::run_reentrant::<G>(
-                            id, rx, activator_for_closure, store,
-                        )
-                        .await;
-                    })
-                } else {
-                    tokio::spawn(async move {
-                        persistent_mailbox::run::<G>(id, rx, activator_for_closure, store).await;
-                    })
-                };
+                let task = tokio::spawn(async move {
+                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store).await;
+                });
                 (tx, task)
             }),
         );

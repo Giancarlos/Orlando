@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::mpsc;
 
-use orlando_core::{GrainActivator, GrainHandler, GrainId, GrainRef, mailbox, reentrant_mailbox};
+use orlando_core::{GrainActivator, GrainHandler, GrainId, GrainRef, RequestContext, mailbox, reentrant_mailbox};
 
 use crate::error::ClusterError;
 use crate::network_message::{Encoding, NetworkMessage};
@@ -27,6 +27,8 @@ pub struct MessageRegistry {
     handlers: HashMap<(&'static str, &'static str), DispatchFn>,
     grain_types: HashMap<String, &'static str>,
     message_types: HashMap<String, &'static str>,
+    /// Maps grain_type_name -> Rust type name, for collision detection.
+    grain_rust_types: HashMap<String, &'static str>,
 }
 
 impl Default for MessageRegistry {
@@ -41,6 +43,7 @@ impl MessageRegistry {
             handlers: HashMap::new(),
             grain_types: HashMap::new(),
             message_types: HashMap::new(),
+            grain_rust_types: HashMap::new(),
         }
     }
 
@@ -57,6 +60,19 @@ impl MessageRegistry {
     {
         let grain_type: &'static str = G::grain_type_name();
         let message_type: &'static str = M::message_type_name();
+        let rust_type: &'static str = std::any::type_name::<G>();
+
+        // Detect grain type name collisions (two different Rust types with the same grain_type_name)
+        if let Some(&existing_rust_type) = self.grain_rust_types.get(grain_type)
+            && existing_rust_type != rust_type
+        {
+            panic!(
+                "grain type name collision: \"{}\" is used by both {} and {}",
+                grain_type, existing_rust_type, rust_type
+            );
+        }
+        self.grain_rust_types
+            .insert(grain_type.to_string(), rust_type);
 
         self.grain_types
             .insert(grain_type.to_string(), grain_type);
@@ -67,7 +83,7 @@ impl MessageRegistry {
             move |key: String,
                   payload: Vec<u8>,
                   encoding: Encoding,
-                  _request_context: HashMap<String, String>,
+                  request_context: HashMap<String, String>,
                   activator: Arc<dyn GrainActivator>| {
                 Box::pin(async move {
                     // Deserialize based on encoding
@@ -115,8 +131,9 @@ impl MessageRegistry {
                     );
 
                     let grain_ref = GrainRef::<G>::new(sender);
-                    let result = grain_ref
-                        .ask(msg)
+                    let req_ctx = RequestContext::with_values(request_context);
+                    let result = req_ctx
+                        .scope(grain_ref.ask(msg))
                         .await
                         .map_err(|e| ClusterError::HandlerError(e.to_string()))?;
 

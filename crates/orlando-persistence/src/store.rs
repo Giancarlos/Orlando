@@ -3,6 +3,7 @@ use orlando_core::GrainId;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PersistenceError {
     #[error("serialization failed: {0}")]
     Serialization(String),

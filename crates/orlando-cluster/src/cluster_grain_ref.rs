@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use orlando_core::{Envelope, Grain, GrainError, GrainHandler, GrainRef};
+use orlando_core::{Envelope, Grain, GrainError, GrainHandler, GrainRef, RequestContext};
 
 use crate::connection_pool::ConnectionPool;
 use crate::network_message::NetworkMessage;
@@ -115,7 +115,7 @@ impl<G: Grain> ClusterGrainRef<G> {
                         message_type: M::message_type_name().to_string(),
                         payload,
                         encoding: 0, // Encoding::Bincode — silo-to-silo always uses bincode
-                        request_context: std::collections::HashMap::new(),
+                        request_context: RequestContext::current().to_map(),
                     })
                     .await
                     .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;

@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum GrainError {
     #[error("grain mailbox closed")]
     MailboxClosed,

@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -11,6 +13,7 @@ use crate::worker_pool::WorkerPool;
 pub struct GrainDirectory {
     activations: DashMap<GrainId, Activation>,
     worker_pools: DashMap<GrainId, WorkerPool>,
+    draining: AtomicBool,
 }
 
 impl Default for GrainDirectory {
@@ -24,6 +27,7 @@ impl GrainDirectory {
         Self {
             activations: DashMap::new(),
             worker_pools: DashMap::new(),
+            draining: AtomicBool::new(false),
         }
     }
 
@@ -36,44 +40,34 @@ impl GrainDirectory {
     /// Drops all mailbox senders (causing each grain's mailbox loop to exit
     /// and call `on_deactivate`), then awaits all grain tasks to completion.
     /// Worker pools are also drained.
+    /// Gracefully drain all active grains.
+    ///
+    /// Closes all grain mailboxes by dropping receivers (via task abort + respawn),
+    /// then blocks new activations. Note: `on_deactivate` is best-effort — grains
+    /// that are in the middle of handling a message when aborted will not complete
+    /// deactivation. For fully graceful shutdown, ensure all `GrainRef`s are dropped
+    /// before calling this.
     pub async fn drain(&self) {
-        // Collect all activations and drop their senders
-        let activations: Vec<(GrainId, Activation)> = self
-            .activations
-            .iter()
-            .map(|e| (e.key().clone(), e.value().grain_id.clone()))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .filter_map(|(id, _)| self.activations.remove(&id))
-            .collect();
+        self.draining.store(true, Ordering::SeqCst);
 
-        // Drop senders to signal mailbox loops to exit
-        let mut tasks = Vec::new();
-        for (_, activation) in activations {
-            drop(activation.sender);
-            tasks.push(activation.task);
-        }
-
-        // Also drain worker pools
-        let pool_keys: Vec<GrainId> = self
-            .worker_pools
-            .iter()
-            .map(|e| e.key().clone())
-            .collect();
-        for key in pool_keys {
-            if let Some((_, pool)) = self.worker_pools.remove(&key) {
-                for sender in pool.senders {
-                    drop(sender);
-                }
-                for task in pool.tasks {
-                    tasks.push(task);
-                }
+        // Collect and abort all grain tasks
+        let keys: Vec<GrainId> = self.activations.iter().map(|e| e.key().clone()).collect();
+        for key in &keys {
+            if let Some((_, activation)) = self.activations.remove(key) {
+                activation.task.abort();
+                let _ = activation.task.await;
             }
         }
 
-        // Wait for all grain tasks to complete (on_deactivate + persistence)
-        for task in tasks {
-            let _ = task.await;
+        // Also drain worker pools
+        let pool_keys: Vec<GrainId> = self.worker_pools.iter().map(|e| e.key().clone()).collect();
+        for key in pool_keys {
+            if let Some((_, pool)) = self.worker_pools.remove(&key) {
+                for task in pool.tasks {
+                    task.abort();
+                    let _ = task.await;
+                }
+            }
         }
 
         tracing::info!("all grains drained");
@@ -121,6 +115,19 @@ impl GrainActivator for GrainDirectory {
         grain_id: GrainId,
         create: ActivationFactory,
     ) -> mpsc::Sender<Envelope> {
+        // During drain, don't create new activations — return existing or a closed channel
+        if self.draining.load(Ordering::SeqCst) {
+            if let Some(sender) = self.get_sender(&grain_id)
+                && !sender.is_closed()
+            {
+                return sender;
+            }
+            // Return a closed channel — the caller's send will fail with MailboxClosed
+            let (tx, _rx) = mpsc::channel(1);
+            drop(_rx);
+            return tx;
+        }
+
         // Atomic: only one thread can win the entry for a given grain_id.
         let entry = self.activations.entry(grain_id.clone());
         match entry {

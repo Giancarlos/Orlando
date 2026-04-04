@@ -9,6 +9,7 @@ use crate::swim::{self, SwimState};
 
 /// A membership change event broadcast to subscribers (e.g., the rebalancer).
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum MembershipChange {
     SiloJoined(SiloAddress),
     SiloLeft(SiloAddress),
