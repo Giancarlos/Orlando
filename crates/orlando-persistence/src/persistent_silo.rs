@@ -82,10 +82,10 @@ impl PersistentSilo {
         let activator_for_closure = activator.clone();
         let sender = activator.get_or_insert(
             grain_id,
-            Box::new(move |id| {
+            Box::new(move |id, cancellation| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
-                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store, strategy)
+                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store, strategy, cancellation)
                         .await;
                 });
                 (tx, task)
@@ -117,10 +117,10 @@ impl PersistentSilo {
         let strategy = PersistenceStrategy::default();
         let sender = activator.get_or_insert(
             grain_id.clone(),
-            Box::new(move |id| {
+            Box::new(move |id, cancellation| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
-                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store, strategy)
+                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store, strategy, cancellation)
                         .await;
                 });
                 (tx, task)
@@ -164,11 +164,11 @@ impl PersistentSilo {
         let activator_for_closure = activator.clone();
         let sender = activator.get_or_insert(
             grain_id,
-            Box::new(move |id| {
+            Box::new(move |id, cancellation| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
                     persistent_mailbox::run_versioned::<G>(
-                        id, rx, activator_for_closure, store, strategy,
+                        id, rx, activator_for_closure, store, strategy, cancellation,
                     )
                     .await;
                 });

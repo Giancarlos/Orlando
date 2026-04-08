@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use orlando_core::{Envelope, Grain, GrainActivator, GrainContext, GrainId};
+use orlando_core::{CancellationToken, Envelope, Grain, GrainActivator, GrainContext, GrainId};
 
 use crate::persistent_grain::PersistentGrain;
 use crate::store::{PersistenceError, PersistenceStrategy, StateStore};
@@ -21,12 +21,14 @@ pub(crate) async fn run<G>(
     activator: Arc<dyn GrainActivator>,
     store: Arc<dyn StateStore>,
     strategy: PersistenceStrategy,
+    cancellation: CancellationToken,
 ) where
     G: PersistentGrain,
     G::State: Serialize + DeserializeOwned,
 {
     let initial = load_or_default::<G::State>(&store, &grain_id).await;
-    let ctx = GrainContext::new(grain_id.clone(), activator);
+    let ctx = GrainContext::new(grain_id.clone(), activator)
+        .with_cancellation(cancellation);
 
     let final_state = run_lifecycle::<G>(initial, rx, &ctx, &grain_id, &strategy, &store).await;
 
@@ -48,6 +50,7 @@ pub(crate) async fn run_versioned<G>(
     activator: Arc<dyn GrainActivator>,
     store: Arc<dyn StateStore>,
     strategy: PersistenceStrategy,
+    cancellation: CancellationToken,
 ) where
     G: VersionedGrain,
     G::State: Serialize + DeserializeOwned,
@@ -67,7 +70,8 @@ pub(crate) async fn run_versioned<G>(
         }
     };
 
-    let ctx = GrainContext::new(grain_id.clone(), activator);
+    let ctx = GrainContext::new(grain_id.clone(), activator)
+        .with_cancellation(cancellation);
 
     let final_state = run_lifecycle::<G>(initial, rx, &ctx, &grain_id, &strategy, &store).await;
 

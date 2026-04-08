@@ -5,7 +5,6 @@ use std::time::Duration;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-
 use orlando_core::{ActivationFactory, CancellationToken, Envelope, GrainActivator, GrainId, PoolFactory};
 
 use crate::activation::Activation;
@@ -59,6 +58,12 @@ impl GrainDirectory {
         })
     }
 
+    /// Access the underlying activations map.
+    /// Primarily for testing and diagnostics.
+    pub fn activations(&self) -> &DashMap<GrainId, Activation> {
+        &self.activations
+    }
+
     /// Gracefully drain all active grains.
     ///
     /// Blocks new activations, then drops all directory-held sender clones so
@@ -66,6 +71,11 @@ impl GrainDirectory {
     /// Waits up to 5 seconds for tasks to finish; any that remain are aborted.
     pub async fn drain(&self) {
         self.draining.store(true, Ordering::SeqCst);
+
+        // Cancel all grain tokens first so handlers see is_cancelled() == true
+        for entry in self.activations.iter() {
+            entry.value().cancellation.cancel();
+        }
 
         // Remove all activations and drop the directory's sender clones.
         // If no outstanding GrainRef clones exist, this closes the channel,
@@ -207,12 +217,13 @@ impl GrainActivator for GrainDirectory {
                     // Stale entry — grain deactivated but cleanup raced with this lookup.
                     // Replace with a fresh activation. No net gauge change since the stale
                     // one was already counted and this replaces it 1-for-1.
-                    let (sender, task) = create(grain_id.clone());
+                    let token = CancellationToken::new();
+                    let (sender, task) = create(grain_id.clone(), token.clone());
                     let activation = Activation {
                         grain_id,
                         sender: sender.clone(),
                         task,
-                        cancellation: CancellationToken::new(),
+                        cancellation: token,
                     };
                     e.replace_entry(activation);
                     sender
@@ -221,7 +232,8 @@ impl GrainActivator for GrainDirectory {
                 }
             }
             dashmap::mapref::entry::Entry::Vacant(e) => {
-                let (sender, task) = create(grain_id.clone());
+                let token = CancellationToken::new();
+                let (sender, task) = create(grain_id.clone(), token.clone());
                 metrics::gauge!("orlando.grain.activations_active",
                     "grain_type" => grain_id.type_name.to_string(),
                 )
@@ -230,7 +242,7 @@ impl GrainActivator for GrainDirectory {
                     grain_id,
                     sender: sender.clone(),
                     task,
-                    cancellation: CancellationToken::new(),
+                    cancellation: token,
                 };
                 e.insert(activation);
                 sender
@@ -257,7 +269,8 @@ impl GrainActivator for GrainDirectory {
                 let mut senders = Vec::with_capacity(pool_size);
                 let mut tasks = Vec::with_capacity(pool_size);
                 for _ in 0..pool_size {
-                    let (sender, task) = create(grain_id.clone());
+                    let token = CancellationToken::new();
+                    let (sender, task) = create(grain_id.clone(), token);
                     senders.push(sender);
                     tasks.push(task);
                 }
@@ -273,7 +286,8 @@ impl GrainActivator for GrainDirectory {
                 let mut senders = Vec::with_capacity(pool_size);
                 let mut tasks = Vec::with_capacity(pool_size);
                 for _ in 0..pool_size {
-                    let (sender, task) = create(grain_id.clone());
+                    let token = CancellationToken::new();
+                    let (sender, task) = create(grain_id.clone(), token);
                     senders.push(sender);
                     tasks.push(task);
                 }

@@ -1146,6 +1146,7 @@ dependencies = [
  "async-trait",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

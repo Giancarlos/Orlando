@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use crate::envelope::Envelope;
 use crate::grain::Grain;
@@ -13,9 +14,11 @@ pub async fn run_mailbox<G: Grain>(
     grain_id: GrainId,
     mut rx: mpsc::Receiver<Envelope>,
     activator: Arc<dyn GrainActivator>,
+    cancellation: CancellationToken,
 ) {
     let mut state = G::State::default();
-    let ctx = GrainContext::new(grain_id.clone(), activator);
+    let ctx = GrainContext::new(grain_id.clone(), activator)
+        .with_cancellation(cancellation);
 
     tracing::debug!(%grain_id, "grain activating");
     G::on_activate(&mut state, &ctx).await;

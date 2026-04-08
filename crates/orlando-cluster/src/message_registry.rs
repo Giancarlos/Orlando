@@ -117,18 +117,18 @@ impl MessageRegistry {
                     let activator_for_mailbox = activator.clone();
                     let sender = activator.get_or_insert(
                         grain_id,
-                        Box::new(move |id| {
+                        Box::new(move |id, cancellation| {
                             let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                             let task = if G::reentrant() {
                                 tokio::spawn(async move {
                                     reentrant_mailbox::run_reentrant_mailbox::<G>(
-                                        id, rx, activator_for_mailbox,
+                                        id, rx, activator_for_mailbox, cancellation,
                                     )
                                     .await;
                                 })
                             } else {
                                 tokio::spawn(async move {
-                                    mailbox::run_mailbox::<G>(id, rx, activator_for_mailbox).await;
+                                    mailbox::run_mailbox::<G>(id, rx, activator_for_mailbox, cancellation).await;
                                 })
                             };
                             (tx, task)

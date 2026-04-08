@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use crate::envelope::Envelope;
 use crate::grain::Grain;
@@ -24,10 +25,12 @@ pub async fn run_reentrant_mailbox<G: Grain>(
     grain_id: GrainId,
     mut rx: mpsc::Receiver<Envelope>,
     activator: Arc<dyn GrainActivator>,
+    cancellation: CancellationToken,
 ) {
     let state: Arc<tokio::sync::Mutex<Box<dyn Any + Send>>> =
         Arc::new(tokio::sync::Mutex::new(Box::new(G::State::default())));
-    let ctx = GrainContext::new(grain_id.clone(), activator);
+    let ctx = GrainContext::new(grain_id.clone(), activator)
+        .with_cancellation(cancellation);
 
     tracing::debug!(%grain_id, "reentrant grain activating");
     {
