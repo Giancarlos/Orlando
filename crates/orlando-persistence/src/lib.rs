@@ -1,4 +1,8 @@
 mod file_store;
+mod journal_store;
+mod journaled_grain;
+pub(crate) mod journaled_mailbox;
+mod memory_journal_store;
 mod memory_store;
 mod persistent_grain;
 pub(crate) mod persistent_mailbox;
@@ -9,9 +13,14 @@ mod transaction;
 mod versioned_grain;
 
 pub use file_store::FileStateStore;
+pub use journal_store::{JournalEntry, JournalStore};
+pub use journaled_grain::{JournaledGrain, JournaledHandler};
+pub use memory_journal_store::InMemoryJournalStore;
 pub use memory_store::InMemoryStateStore;
 pub use persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
-pub use persistent_silo::{PersistentSilo, PersistentSiloBuilder, TransactionalGrainRef};
+pub use persistent_silo::{
+    JournaledGrainRef, PersistentSilo, PersistentSiloBuilder, TransactionalGrainRef,
+};
 pub use sqlite_store::SqliteStateStore;
 pub use store::{PersistenceError, PersistenceStrategy, StateStore};
 pub use transaction::TransactionContext;
