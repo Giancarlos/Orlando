@@ -29,6 +29,8 @@ pub struct MessageRegistry {
     message_types: HashMap<String, &'static str>,
     /// Maps grain_type_name -> Rust type name, for collision detection.
     grain_rust_types: HashMap<String, &'static str>,
+    /// Maps message_type_name -> highest supported version for that message type.
+    message_versions: HashMap<String, u32>,
 }
 
 impl Default for MessageRegistry {
@@ -44,6 +46,7 @@ impl MessageRegistry {
             grain_types: HashMap::new(),
             message_types: HashMap::new(),
             grain_rust_types: HashMap::new(),
+            message_versions: HashMap::new(),
         }
     }
 
@@ -83,6 +86,8 @@ impl MessageRegistry {
             .insert(grain_type.to_string(), grain_type);
         self.message_types
             .insert(message_type.to_string(), message_type);
+        self.message_versions
+            .insert(message_type.to_string(), M::message_version());
 
         let dispatch: DispatchFn = Arc::new(
             move |key: String,
@@ -167,12 +172,17 @@ impl MessageRegistry {
     }
 
     /// Dispatch an incoming remote call to the registered handler.
+    ///
+    /// `message_version` is the version the sender encoded the message with.
+    /// If it is newer than the version this silo supports, dispatch returns
+    /// `UnsupportedMessageVersion` so rolling deploys degrade gracefully.
     #[allow(clippy::too_many_arguments)]
     pub async fn dispatch(
         &self,
         grain_type: &str,
         grain_key: String,
         message_type: &str,
+        message_version: u32,
         payload: Vec<u8>,
         encoding: Encoding,
         request_context: HashMap<String, String>,
@@ -188,6 +198,18 @@ impl MessageRegistry {
             .get(message_type)
             .ok_or_else(|| ClusterError::UnknownMessageType(message_type.to_string()))?;
 
+        // Reject messages whose version is newer than what this silo supports.
+        // Older versions (message_version <= supported) are accepted for backward compat.
+        if let Some(&supported_version) = self.message_versions.get(message_type)
+            && message_version > supported_version
+        {
+            return Err(ClusterError::UnsupportedMessageVersion(
+                message_type.to_string(),
+                message_version,
+                supported_version,
+            ));
+        }
+
         let handler = self
             .handlers
             .get(&(*type_name, *msg_name))
@@ -196,5 +218,187 @@ impl MessageRegistry {
             })?;
 
         handler(grain_key, payload, encoding, request_context, activator).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orlando_core::{Envelope, Grain, GrainHandler, GrainId, Message};
+    use serde::{Deserialize, Serialize};
+    use tokio::task::JoinHandle;
+
+    // -- Minimal test grain + message --
+
+    struct TestGrain;
+
+    #[async_trait::async_trait]
+    impl Grain for TestGrain {
+        type State = ();
+
+        fn grain_type_name() -> &'static str {
+            "TestGrain"
+        }
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct TestMsg;
+
+    impl Message for TestMsg {
+        type Result = ();
+    }
+
+    impl crate::network_message::NetworkMessage for TestMsg {
+        fn message_type_name() -> &'static str {
+            "TestMsg"
+        }
+        // default version = 0
+    }
+
+    #[async_trait::async_trait]
+    impl GrainHandler<TestMsg> for TestGrain {
+        async fn handle(
+            _state: &mut Self::State,
+            _msg: TestMsg,
+            _ctx: &orlando_core::GrainContext,
+        ) -> <TestMsg as Message>::Result {
+        }
+    }
+
+    // A v2 message to test version rejection
+    #[derive(Serialize, Deserialize)]
+    struct TestMsgV2;
+
+    impl Message for TestMsgV2 {
+        type Result = ();
+    }
+
+    impl crate::network_message::NetworkMessage for TestMsgV2 {
+        fn message_type_name() -> &'static str {
+            "TestMsgV2"
+        }
+        fn message_version() -> u32 {
+            2
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl GrainHandler<TestMsgV2> for TestGrain {
+        async fn handle(
+            _state: &mut Self::State,
+            _msg: TestMsgV2,
+            _ctx: &orlando_core::GrainContext,
+        ) -> <TestMsgV2 as Message>::Result {
+        }
+    }
+
+    struct FakeActivator;
+
+    impl GrainActivator for FakeActivator {
+        fn get_sender(&self, _id: &GrainId) -> Option<tokio::sync::mpsc::Sender<Envelope>> {
+            None
+        }
+        fn register(
+            &self,
+            _id: GrainId,
+            _sender: tokio::sync::mpsc::Sender<Envelope>,
+            _task: JoinHandle<()>,
+        ) {
+        }
+        fn remove(&self, _id: &GrainId) {}
+    }
+
+    #[tokio::test]
+    async fn default_version_zero_dispatch_succeeds() {
+        let mut registry = MessageRegistry::new();
+        registry.register::<TestGrain, TestMsg>();
+
+        let payload =
+            bincode::serde::encode_to_vec(&TestMsg, bincode::config::standard()).unwrap();
+
+        // version 0 matches the default — should not be rejected by the version check
+        let result = registry
+            .dispatch(
+                "TestGrain",
+                "key-1".to_string(),
+                "TestMsg",
+                0,
+                payload,
+                Encoding::Bincode,
+                HashMap::new(),
+                Arc::new(FakeActivator),
+            )
+            .await;
+
+        // The dispatch will succeed or fail inside the handler (activation),
+        // but it must NOT fail with UnsupportedMessageVersion.
+        match &result {
+            Err(ClusterError::UnsupportedMessageVersion(..)) => {
+                panic!("version 0 should not be rejected")
+            }
+            _ => {} // any other outcome is fine for this test
+        }
+    }
+
+    #[tokio::test]
+    async fn newer_version_than_supported_returns_error() {
+        let mut registry = MessageRegistry::new();
+        registry.register::<TestGrain, TestMsgV2>();
+
+        let payload =
+            bincode::serde::encode_to_vec(&TestMsgV2, bincode::config::standard()).unwrap();
+
+        // Claim version 5 but the silo only supports v2
+        let result = registry
+            .dispatch(
+                "TestGrain",
+                "key-1".to_string(),
+                "TestMsgV2",
+                5,
+                payload,
+                Encoding::Bincode,
+                HashMap::new(),
+                Arc::new(FakeActivator),
+            )
+            .await;
+
+        match result {
+            Err(ClusterError::UnsupportedMessageVersion(name, got, supported)) => {
+                assert_eq!(name, "TestMsgV2");
+                assert_eq!(got, 5);
+                assert_eq!(supported, 2);
+            }
+            other => panic!("expected UnsupportedMessageVersion, got {:?}", other.err()),
+        }
+    }
+
+    #[tokio::test]
+    async fn older_version_than_supported_is_accepted() {
+        let mut registry = MessageRegistry::new();
+        registry.register::<TestGrain, TestMsgV2>();
+
+        let payload =
+            bincode::serde::encode_to_vec(&TestMsgV2, bincode::config::standard()).unwrap();
+
+        // Claim version 1 but the silo supports v2 — backward compat
+        let result = registry
+            .dispatch(
+                "TestGrain",
+                "key-1".to_string(),
+                "TestMsgV2",
+                1,
+                payload,
+                Encoding::Bincode,
+                HashMap::new(),
+                Arc::new(FakeActivator),
+            )
+            .await;
+
+        match &result {
+            Err(ClusterError::UnsupportedMessageVersion(..)) => {
+                panic!("older version should be accepted for backward compatibility")
+            }
+            _ => {} // any other outcome is fine
+        }
     }
 }

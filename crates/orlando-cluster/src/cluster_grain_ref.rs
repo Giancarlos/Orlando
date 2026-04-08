@@ -118,6 +118,7 @@ impl<G: Grain> ClusterGrainRef<G> {
 
                 let mut last_error = None;
 
+<<<<<<< HEAD
                 for attempt in 0..=self.retry_policy.max_retries {
                     if attempt > 0 {
                         let delay = self.retry_policy.delay_for_attempt(attempt - 1);
@@ -129,6 +130,20 @@ impl<G: Grain> ClusterGrainRef<G> {
                             "retrying remote grain call"
                         );
                     }
+=======
+                let response = client
+                    .invoke(InvokeRequest {
+                        grain_type: grain_type.to_string(),
+                        grain_key: grain_key.clone(),
+                        message_type: M::message_type_name().to_string(),
+                        payload,
+                        encoding: 0, // Encoding::Bincode — silo-to-silo always uses bincode
+                        request_context: RequestContext::current().to_map(),
+                        message_version: M::message_version(),
+                    })
+                    .await
+                    .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;
+>>>>>>> worktree-agent-a636183e
 
                     let result = Self::remote_invoke::<M>(
                         pool,

@@ -43,6 +43,14 @@ where
     /// Stable name for this message type (used as the key in the message registry).
     fn message_type_name() -> &'static str;
 
+    /// Version of this message type. Default 0 (unversioned, backward compatible).
+    /// Increment when the message schema changes in a breaking way.
+    /// During rolling deploys, a silo receiving a message with a version newer
+    /// than the one it supports will return `UnsupportedMessageVersion`.
+    fn message_version() -> u32 {
+        0
+    }
+
     /// Whether this message supports protobuf encoding for external clients.
     fn supports_proto() -> bool {
         false

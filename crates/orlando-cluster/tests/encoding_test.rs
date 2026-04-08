@@ -175,6 +175,7 @@ async fn protobuf_round_trip_via_grpc() {
             payload,
             encoding: 1, // PROTOBUF
             request_context: std::collections::HashMap::new(),
+            message_version: 0,
         })
         .await
         .unwrap();
@@ -225,6 +226,7 @@ async fn protobuf_to_bincode_only_message_returns_error() {
             payload: vec![1, 2, 3], // garbage protobuf bytes
             encoding: 1,            // PROTOBUF
             request_context: std::collections::HashMap::new(),
+            message_version: 0,
         })
         .await
         .unwrap();
@@ -276,6 +278,7 @@ async fn protobuf_multiple_calls_accumulate_state() {
                 payload,
                 encoding: 1,
                     request_context: std::collections::HashMap::new(),
+                    message_version: 0,
             })
             .await
             .unwrap();
@@ -294,6 +297,7 @@ async fn protobuf_multiple_calls_accumulate_state() {
             payload,
             encoding: 1,
                     request_context: std::collections::HashMap::new(),
+            message_version: 0,
         })
         .await
         .unwrap();
