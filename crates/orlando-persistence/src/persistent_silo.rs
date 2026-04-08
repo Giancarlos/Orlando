@@ -9,11 +9,14 @@ use tokio::sync::{mpsc, oneshot};
 use orlando_core::{Envelope, Grain, GrainActivator, GrainContext, GrainError, GrainId, GrainRef, Message};
 use orlando_runtime::GrainDirectory;
 
+use crate::journal_store::JournalStore;
+use crate::journaled_grain::{JournaledGrain, JournaledHandler};
+use crate::journaled_mailbox::{self, JournaledState};
 use crate::persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
-use crate::versioned_grain::VersionedGrain;
 use crate::persistent_mailbox;
 use crate::store::StateStore;
 use crate::transaction::TransactionContext;
+use crate::versioned_grain::VersionedGrain;
 
 /// A silo that supports both regular and persistent grains.
 pub struct PersistentSilo {
@@ -134,6 +137,45 @@ impl PersistentSilo {
         );
 
         GrainRef::new(sender)
+    }
+
+    /// Get a reference to a journaled (event-sourced) grain.
+    ///
+    /// Journaled grains store events instead of state snapshots. On activation,
+    /// the event journal is replayed to reconstruct state. Handlers return events
+    /// which are persisted and then applied to the state.
+    pub fn journaled_get_ref<G>(
+        &self,
+        key: impl Into<String>,
+        journal: Arc<dyn JournalStore>,
+    ) -> JournaledGrainRef<G>
+    where
+        G: JournaledGrain,
+        G::State: Serialize + DeserializeOwned,
+        G::Event: Serialize + DeserializeOwned,
+    {
+        let grain_id = GrainId {
+            type_name: std::any::type_name::<G>(),
+            key: key.into(),
+        };
+
+        let activator: Arc<dyn GrainActivator> = self.directory.clone();
+        let journal_for_mailbox = journal.clone();
+
+        let activator_for_closure = activator.clone();
+        let sender = activator.get_or_insert(
+            grain_id.clone(),
+            Box::new(move |id| {
+                let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
+                let task = tokio::spawn(async move {
+                    journaled_mailbox::run::<G>(id, rx, activator_for_closure, journal_for_mailbox)
+                        .await;
+                });
+                (tx, task)
+            }),
+        );
+
+        JournaledGrainRef::new(sender, journal, grain_id)
     }
 
     /// Access the underlying state store.
@@ -278,6 +320,185 @@ where
             .map_err(|_| GrainError::MailboxClosed)?;
 
         // The response is Result<M::Result, String>
+        match response.downcast::<Result<M::Result, String>>() {
+            Ok(boxed) => match *boxed {
+                Ok(result) => Ok(result),
+                Err(e) => Err(GrainError::HandlerFailed(e)),
+            },
+            Err(_) => Err(GrainError::ReplyTypeMismatch),
+        }
+    }
+}
+
+/// A grain reference for journaled (event-sourced) grains.
+///
+/// The `ask` method calls `JournaledHandler::handle`, persists the returned
+/// events to the journal, applies them to state, and triggers snapshots
+/// when the configured interval is reached.
+pub struct JournaledGrainRef<G: Grain> {
+    sender: mpsc::Sender<Envelope>,
+    journal: Arc<dyn JournalStore>,
+    grain_id: GrainId,
+    _marker: std::marker::PhantomData<G>,
+}
+
+impl<G: Grain> std::fmt::Debug for JournaledGrainRef<G> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JournaledGrainRef")
+            .field("grain_id", &self.grain_id)
+            .finish()
+    }
+}
+
+impl<G: Grain> Clone for JournaledGrainRef<G> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            journal: self.journal.clone(),
+            grain_id: self.grain_id.clone(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<G> JournaledGrainRef<G>
+where
+    G: JournaledGrain,
+    G::State: Serialize + DeserializeOwned,
+    G::Event: Serialize + DeserializeOwned,
+{
+    pub(crate) fn new(
+        sender: mpsc::Sender<Envelope>,
+        journal: Arc<dyn JournalStore>,
+        grain_id: GrainId,
+    ) -> Self {
+        Self {
+            sender,
+            journal,
+            grain_id,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Send a message to this journaled grain and await the result.
+    ///
+    /// The handler receives read-only state and returns `(result, events)`.
+    /// Events are persisted to the journal and applied to state atomically.
+    pub async fn ask<M>(&self, msg: M) -> Result<M::Result, GrainError>
+    where
+        M: Message,
+        G: JournaledHandler<M>,
+    {
+        let (tx, rx) = oneshot::channel::<Box<dyn Any + Send>>();
+        let journal = self.journal.clone();
+        let grain_id = self.grain_id.clone();
+
+        let envelope = Envelope::new(Box::new(
+            move |state_any: &mut (dyn Any + Send), ctx: &GrainContext|
+                -> Pin<Box<dyn Future<Output = ()> + Send + '_>>
+            {
+                let Some(journaled) = state_any.downcast_mut::<JournaledState<G::State>>() else {
+                    tracing::error!("journaled grain state type mismatch — message dropped");
+                    let _ = tx.send(Box::new(Err::<M::Result, String>(
+                        "journaled grain state type mismatch".to_string(),
+                    )) as Box<dyn Any + Send>);
+                    return Box::pin(async {});
+                };
+
+                Box::pin(async move {
+                    // Call handler with read-only state
+                    let (result, events) =
+                        <G as JournaledHandler<M>>::handle(&journaled.state, msg, ctx).await;
+
+                    if !events.is_empty() {
+                        // Serialize events
+                        let mut event_bytes_list = Vec::with_capacity(events.len());
+                        for event in &events {
+                            match bincode::serde::encode_to_vec(event, bincode::config::standard())
+                            {
+                                Ok(bytes) => event_bytes_list.push(bytes),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "failed to serialize event, skipping"
+                                    );
+                                }
+                            }
+                        }
+
+                        // Persist events
+                        if !event_bytes_list.is_empty() {
+                            match journal.append(&grain_id, &event_bytes_list).await {
+                                Ok(new_seq) => {
+                                    journaled.sequence = new_seq;
+                                    journaled.events_since_snapshot +=
+                                        event_bytes_list.len() as u64;
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        error = %e,
+                                        "failed to persist events to journal"
+                                    );
+                                }
+                            }
+                        }
+
+                        // Apply events to state
+                        for event in &events {
+                            G::apply(&mut journaled.state, event);
+                        }
+
+                        // Check if snapshot is needed
+                        if journaled.snapshot_interval > 0
+                            && journaled.events_since_snapshot >= journaled.snapshot_interval
+                        {
+                            match crate::persistent_mailbox::serialize_state(&journaled.state) {
+                                Ok(bytes) => {
+                                    match journal
+                                        .save_snapshot(&grain_id, journaled.sequence, &bytes)
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            tracing::debug!(
+                                                seq = journaled.sequence,
+                                                "snapshot saved"
+                                            );
+                                            journaled.events_since_snapshot = 0;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "failed to save snapshot"
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "failed to serialize state for snapshot"
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    let _ = tx.send(Box::new(Ok::<M::Result, String>(result))
+                        as Box<dyn Any + Send>);
+                })
+            },
+        ));
+
+        self.sender
+            .send(envelope)
+            .await
+            .map_err(|_| GrainError::MailboxClosed)?;
+
+        let response = tokio::time::timeout(G::ask_timeout(), rx)
+            .await
+            .map_err(|_| GrainError::Timeout(G::ask_timeout()))?
+            .map_err(|_| GrainError::MailboxClosed)?;
+
         match response.downcast::<Result<M::Result, String>>() {
             Ok(boxed) => match *boxed {
                 Ok(result) => Ok(result),
