@@ -17,4 +17,7 @@ pub enum GrainError {
 
     #[error("grain call timed out after {0:?}")]
     Timeout(std::time::Duration),
+
+    #[error("deadlock detected: grain call cycle {0}")]
+    DeadlockDetected(String),
 }

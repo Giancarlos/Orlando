@@ -8,6 +8,7 @@ use crate::filter::{FilterChain, GrainCallInfo};
 use crate::grain::{Grain, GrainHandler};
 use crate::grain_id::GrainId;
 use crate::message::Message;
+use crate::request_context::RequestContext;
 
 #[derive(Debug)]
 pub struct GrainRef<G: Grain> {
@@ -61,6 +62,16 @@ impl<G: Grain> GrainRef<G> {
         M: Message,
         G: GrainHandler<M>,
     {
+        // Check for deadlock: is the target grain already in the current call chain?
+        let current_ctx = RequestContext::current();
+        if current_ctx.is_in_call_chain(&self.grain_id) {
+            let chain = current_ctx.call_chain().unwrap_or("unknown");
+            return Err(GrainError::DeadlockDetected(format!(
+                "{} -> {}/{}",
+                chain, self.grain_id.type_name, self.grain_id.key
+            )));
+        }
+
         let info = GrainCallInfo {
             grain_id: self.grain_id.clone(),
             message_type: std::any::type_name::<M>(),

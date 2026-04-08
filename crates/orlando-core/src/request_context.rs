@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::grain_id::GrainId;
+
 /// Key-value context that flows through grain-to-grain calls.
 ///
 /// Used for distributed tracing IDs, correlation IDs, tenant IDs, etc.
@@ -72,5 +74,33 @@ impl RequestContext {
     /// Run a future with this request context set as the task-local.
     pub async fn scope<F: std::future::Future>(self, f: F) -> F::Output {
         CURRENT.scope(self, f).await
+    }
+}
+
+const CALL_CHAIN_KEY: &str = "__orlando_call_chain";
+
+impl RequestContext {
+    /// Add a grain ID to the call chain for deadlock detection.
+    pub fn with_call_chain_entry(&self, grain_id: &GrainId) -> Self {
+        let chain = self.get(CALL_CHAIN_KEY).unwrap_or("").to_string();
+        let entry = format!("{}/{}", grain_id.type_name, grain_id.key);
+        let new_chain = if chain.is_empty() {
+            entry
+        } else {
+            format!("{},{}", chain, entry)
+        };
+        self.with(CALL_CHAIN_KEY, new_chain)
+    }
+
+    /// Check if a grain ID is in the current call chain.
+    pub fn is_in_call_chain(&self, grain_id: &GrainId) -> bool {
+        let entry = format!("{}/{}", grain_id.type_name, grain_id.key);
+        self.get(CALL_CHAIN_KEY)
+            .is_some_and(|chain| chain.split(',').any(|e| e == entry))
+    }
+
+    /// Get the current call chain as a string (for error messages).
+    pub fn call_chain(&self) -> Option<&str> {
+        self.get(CALL_CHAIN_KEY)
     }
 }
