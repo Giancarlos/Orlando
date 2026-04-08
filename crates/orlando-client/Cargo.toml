@@ -1,0 +1,14 @@
+[package]
+name = "orlando-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+orlando-cluster = { path = "../orlando-cluster" }
+tokio = { workspace = true }
+tonic = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+arc-swap = { workspace = true }
+tracing = { workspace = true }

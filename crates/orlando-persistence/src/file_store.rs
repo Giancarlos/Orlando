@@ -20,6 +20,21 @@ impl FileStateStore {
         }
     }
 
+    /// Validate that a grain key does not contain path traversal characters.
+    fn validate_key(key: &str) -> Result<(), PersistenceError> {
+        if key.contains("..")
+            || key.contains('/')
+            || key.contains('\\')
+            || key.contains('\0')
+        {
+            return Err(PersistenceError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "grain key contains path traversal characters",
+            )));
+        }
+        Ok(())
+    }
+
     fn path_for(&self, grain_id: &GrainId) -> PathBuf {
         let type_dir = grain_id.type_name.replace("::", "__");
         let file_name = format!("{}.bin", grain_id.key);
@@ -30,6 +45,7 @@ impl FileStateStore {
 #[async_trait]
 impl StateStore for FileStateStore {
     async fn load(&self, grain_id: &GrainId) -> Result<Option<Vec<u8>>, PersistenceError> {
+        Self::validate_key(&grain_id.key)?;
         let path = self.path_for(grain_id);
         match tokio::fs::read(&path).await {
             Ok(bytes) => Ok(Some(bytes)),
@@ -39,6 +55,7 @@ impl StateStore for FileStateStore {
     }
 
     async fn save(&self, grain_id: &GrainId, data: &[u8]) -> Result<(), PersistenceError> {
+        Self::validate_key(&grain_id.key)?;
         let path = self.path_for(grain_id);
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -48,6 +65,7 @@ impl StateStore for FileStateStore {
     }
 
     async fn delete(&self, grain_id: &GrainId) -> Result<(), PersistenceError> {
+        Self::validate_key(&grain_id.key)?;
         let path = self.path_for(grain_id);
         match tokio::fs::remove_file(&path).await {
             Ok(()) => Ok(()),

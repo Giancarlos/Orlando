@@ -63,6 +63,7 @@ impl std::fmt::Debug for Silo {
 
 pub struct SiloBuilder {
     filters: Vec<Arc<dyn GrainCallFilter>>,
+    max_activations: Option<usize>,
 }
 
 impl std::fmt::Debug for SiloBuilder {
@@ -77,6 +78,7 @@ impl SiloBuilder {
     fn new() -> Self {
         Self {
             filters: Vec::new(),
+            max_activations: None,
         }
     }
 
@@ -87,9 +89,20 @@ impl SiloBuilder {
         self
     }
 
+    /// Set the maximum number of grain activations on this silo.
+    /// When the limit is reached, new grain activations will fail.
+    pub fn max_activations(mut self, limit: usize) -> Self {
+        self.max_activations = Some(limit);
+        self
+    }
+
     pub fn build(self) -> Silo {
+        let directory = Arc::new(GrainDirectory::new());
+        if let Some(limit) = self.max_activations {
+            directory.set_max_activations(limit);
+        }
         Silo {
-            directory: Arc::new(GrainDirectory::new()),
+            directory,
             filters: FilterChain::new(self.filters),
         }
     }

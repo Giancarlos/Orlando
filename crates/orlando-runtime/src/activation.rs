@@ -1,12 +1,13 @@
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use orlando_core::{Envelope, GrainId};
+use orlando_core::{CancellationToken, Envelope, GrainId};
 
 pub struct Activation {
     pub grain_id: GrainId,
     pub sender: mpsc::Sender<Envelope>,
     pub task: JoinHandle<()>,
+    pub cancellation: CancellationToken,
 }
 
 impl std::fmt::Debug for Activation {

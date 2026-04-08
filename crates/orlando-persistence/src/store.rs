@@ -18,6 +18,27 @@ pub enum PersistenceError {
     Sqlite(#[from] sqlx::Error),
 }
 
+/// Controls when grain state is persisted to the store.
+#[derive(Debug, Clone)]
+pub enum PersistenceStrategy {
+    /// Save state only when the grain deactivates (default).
+    /// Lowest overhead, but state changes are lost if the silo crashes.
+    WriteOnDeactivate,
+    /// Save state after every message handler completes.
+    /// Highest durability, but adds I/O latency to every message.
+    WriteThrough,
+    /// Save state periodically at the given interval, plus on deactivation.
+    /// Balances durability and performance — at most `interval` of work is lost on crash.
+    /// Note: in reentrant grains, this falls back to WriteOnDeactivate behavior.
+    WriteBack(std::time::Duration),
+}
+
+impl Default for PersistenceStrategy {
+    fn default() -> Self {
+        Self::WriteOnDeactivate
+    }
+}
+
 /// Pluggable backend for grain state persistence.
 /// Implementations store and retrieve raw bytes keyed by GrainId.
 #[async_trait]

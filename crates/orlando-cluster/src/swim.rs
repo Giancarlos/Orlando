@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Instant;
+
+use arc_swap::ArcSwap;
 
 use tokio::sync::broadcast;
 
@@ -15,6 +17,13 @@ use crate::proto::{
 // --- Types ---
 
 /// Status of a member in the SWIM protocol.
+///
+/// Note on suspect timing: the `since` field uses local `Instant::now()`.
+/// When suspect gossip propagates between nodes, each node timestamps
+/// its own receipt time — the timeout is per-node, not global. This means
+/// a suspect member may be declared dead at slightly different times on
+/// different nodes (up to one gossip propagation delay apart). This is
+/// standard SWIM behavior and is safe because declarations are idempotent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MemberStatus {
     Alive,
@@ -78,10 +87,13 @@ impl SwimState {
     pub fn apply_gossip(
         &mut self,
         updates: &[GossipUpdate],
-        ring: &mut HashRing,
+        ring: &ArcSwap<HashRing>,
         change_tx: &broadcast::Sender<MembershipChange>,
         pool: &ConnectionPool,
     ) {
+        let mut ring_adds: Vec<SiloAddress> = Vec::new();
+        let mut ring_removes: Vec<SiloAddress> = Vec::new();
+
         for update in updates {
             match update {
                 GossipUpdate::Alive { addr, incarnation } => {
@@ -130,7 +142,7 @@ impl SwimState {
                     if let Some(member) = self.members.get(&addr.silo_id)
                         && *incarnation >= member.incarnation
                     {
-                        ring.remove(addr);
+                        ring_removes.push(addr.clone());
                         pool.remove(&addr.endpoint());
                         self.members.remove(&addr.silo_id);
                         let _ = change_tx.send(MembershipChange::SiloLeft(addr.clone()));
@@ -142,7 +154,7 @@ impl SwimState {
                         continue;
                     }
                     if !self.members.contains_key(&addr.silo_id) {
-                        ring.add(addr.clone());
+                        ring_adds.push(addr.clone());
                         self.members.insert(addr.silo_id.clone(), SwimMember {
                             addr: addr.clone(),
                             status: MemberStatus::Alive,
@@ -153,6 +165,17 @@ impl SwimState {
                     }
                 }
             }
+        }
+
+        if !ring_adds.is_empty() || !ring_removes.is_empty() {
+            let mut new_ring = (**ring.load()).clone();
+            for addr in &ring_removes {
+                new_ring.remove(addr);
+            }
+            for addr in &ring_adds {
+                new_ring.add(addr.clone());
+            }
+            ring.store(Arc::new(new_ring));
         }
     }
 
@@ -184,12 +207,14 @@ impl SwimState {
     pub fn declare_dead(
         &mut self,
         silo_id: &str,
-        ring: &mut HashRing,
+        ring: &ArcSwap<HashRing>,
         pool: &ConnectionPool,
         change_tx: &broadcast::Sender<MembershipChange>,
     ) {
         if let Some(member) = self.members.remove(silo_id) {
-            ring.remove(&member.addr);
+            let mut new_ring = (**ring.load()).clone();
+            new_ring.remove(&member.addr);
+            ring.store(Arc::new(new_ring));
             pool.remove(&member.addr.endpoint());
             self.enqueue_gossip(GossipUpdate::Dead {
                 addr: member.addr.clone(),
@@ -277,7 +302,7 @@ pub(crate) fn from_proto_addr(p: ProtoSiloAddress) -> SiloAddress {
 pub async fn run_swim_protocol(
     config: FailureDetectorConfig,
     swim_state: Arc<tokio::sync::Mutex<SwimState>>,
-    ring: Arc<RwLock<HashRing>>,
+    ring: Arc<ArcSwap<HashRing>>,
     pool: Arc<ConnectionPool>,
     change_tx: broadcast::Sender<MembershipChange>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -366,7 +391,7 @@ async fn direct_ping(
     pool: &Arc<ConnectionPool>,
     gossip: &[GossipUpdate],
     swim_state: &Arc<tokio::sync::Mutex<SwimState>>,
-    ring: &Arc<RwLock<HashRing>>,
+    ring: &Arc<ArcSwap<HashRing>>,
     change_tx: &broadcast::Sender<MembershipChange>,
 ) -> bool {
     let mut client = match pool.get_membership(&target.endpoint()).await {
@@ -378,10 +403,10 @@ async fn direct_ping(
 
     let result = tokio::time::timeout(
         config.ping_timeout,
-        client.ping(PingRequest {
+        client.ping(pool.authorized_request(PingRequest {
             silo_id: local_silo_id,
             gossip: gossip_to_proto(gossip),
-        }),
+        })),
     ).await;
 
     match result {
@@ -390,8 +415,7 @@ async fn direct_ping(
             let incoming = proto_to_gossip(&resp.gossip);
             if !incoming.is_empty() {
                 let mut state = swim_state.lock().await;
-                let mut ring_guard = ring.write().expect("ring lock poisoned");
-                state.apply_gossip(&incoming, &mut ring_guard, change_tx, pool);
+                state.apply_gossip(&incoming, ring, change_tx, pool);
             }
             true
         }
@@ -413,11 +437,11 @@ async fn indirect_ping(
 
     let result = tokio::time::timeout(
         config.ping_timeout * 2,
-        client.ping_req(PingReqRequest {
+        client.ping_req(pool.authorized_request(PingReqRequest {
             target: Some(to_proto_addr(target)),
             requester_silo_id: String::new(),
             gossip: Vec::new(),
-        }),
+        })),
     ).await;
 
     match result {
@@ -429,7 +453,7 @@ async fn indirect_ping(
 /// Declare dead any suspects who have exceeded the suspect timeout.
 async fn expire_suspects(
     swim_state: &Arc<tokio::sync::Mutex<SwimState>>,
-    ring: &Arc<RwLock<HashRing>>,
+    ring: &Arc<ArcSwap<HashRing>>,
     pool: &Arc<ConnectionPool>,
     change_tx: &broadcast::Sender<MembershipChange>,
     config: &FailureDetectorConfig,
@@ -453,9 +477,8 @@ async fn expire_suspects(
 
     if !expired.is_empty() {
         let mut state = swim_state.lock().await;
-        let mut ring_guard = ring.write().expect("ring lock poisoned");
         for silo_id in &expired {
-            state.declare_dead(silo_id, &mut ring_guard, pool, change_tx);
+            state.declare_dead(silo_id, ring, pool, change_tx);
         }
     }
 }

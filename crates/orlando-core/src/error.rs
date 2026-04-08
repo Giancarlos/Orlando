@@ -17,4 +17,10 @@ pub enum GrainError {
 
     #[error("grain call timed out after {0:?}")]
     Timeout(std::time::Duration),
+
+    #[error("grain mailbox full — backpressure")]
+    MailboxFull,
+
+    #[error("silo activation limit exceeded")]
+    SiloOverloaded,
 }

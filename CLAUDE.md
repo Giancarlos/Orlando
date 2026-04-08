@@ -269,6 +269,51 @@ prost = "0.13"
 - No compatibility with the .NET Orleans wire protocol.
 - No WASM grain hosting.
 
+---
+
+## Task Management (GuardRails)
+
+Use `gur` for all task tracking. **Never use shorthand flags** — always use full `--flag` names.
+
+```bash
+# Create tasks
+gur create "title" --priority 1 --type feature --description "details"
+gur create "Fix bug" --priority 0 --type bug
+
+# Workflow
+gur list --status open            # See open tasks
+gur ready                         # Show unblocked tasks
+gur update <id> --status in_progress
+gur close <id> --reason "Done"
+gur reopen <id>                   # Reopen a closed task
+
+# Dependencies
+gur dep add <blocker> <blocked>   # First blocks second
+
+# Test cases (linked to tasks, block closure until passing)
+gur test create "name" --category unit --type integration
+gur test list                     # List all tests
+gur test run <id> passed          # Record result (passed/failed)
+gur test link <test-id> <task-id> # Link test to task
+# Tasks with linked tests cannot be closed until tests pass.
+
+# Gates (quality checkpoints that block task closure)
+gur gate create "name" --type manual
+gur gate link <gate-id> <task-id>
+gur gate pass <gate-id> <task-id>
+
+# View & search
+gur show <id>                     # Task details
+gur search "keyword"              # Search tasks
+gur history <id>                  # Change history for a task
+gur stats                         # Project statistics
+gur summary                       # Session summary of recent activity
+```
+
+Priorities: 0=Critical, 1=High, 2=Medium (default), 3=Low, 4=Lowest
+Types: task, bug, feature, epic
+Test types: unit, integration, e2e, manual, smoke, regression
+
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
 

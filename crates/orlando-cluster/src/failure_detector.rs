@@ -1,4 +1,6 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
 use std::time::Duration;
 
 use tokio::sync::broadcast;
@@ -74,7 +76,7 @@ impl FailureDetectorConfig {
 /// a suspicion mechanism before declaring members dead.
 pub struct FailureDetector {
     config: FailureDetectorConfig,
-    ring: Arc<RwLock<HashRing>>,
+    ring: Arc<ArcSwap<HashRing>>,
     pool: Arc<ConnectionPool>,
     change_tx: broadcast::Sender<MembershipChange>,
     swim_state: Arc<tokio::sync::Mutex<SwimState>>,
@@ -84,7 +86,7 @@ pub struct FailureDetector {
 impl FailureDetector {
     pub fn new(
         config: FailureDetectorConfig,
-        ring: Arc<RwLock<HashRing>>,
+        ring: Arc<ArcSwap<HashRing>>,
         pool: Arc<ConnectionPool>,
         local_addr: SiloAddress,
         change_tx: broadcast::Sender<MembershipChange>,
@@ -104,7 +106,7 @@ impl FailureDetector {
     /// Create with an existing shared SWIM state.
     pub fn with_state(
         config: FailureDetectorConfig,
-        ring: Arc<RwLock<HashRing>>,
+        ring: Arc<ArcSwap<HashRing>>,
         pool: Arc<ConnectionPool>,
         change_tx: broadcast::Sender<MembershipChange>,
         swim_state: Arc<tokio::sync::Mutex<SwimState>>,

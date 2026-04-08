@@ -13,6 +13,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct ConnectionPool {
     transports: DashMap<String, GrainTransportClient<tonic::transport::Channel>>,
     memberships: DashMap<String, MembershipClient<tonic::transport::Channel>>,
+    tls_config: Option<tonic::transport::ClientTlsConfig>,
+    auth_token: Option<String>,
 }
 
 impl Default for ConnectionPool {
@@ -26,18 +28,63 @@ impl ConnectionPool {
         Self {
             transports: DashMap::new(),
             memberships: DashMap::new(),
+            tls_config: None,
+            auth_token: None,
         }
     }
 
-    async fn connect_channel(endpoint: &str) -> Result<tonic::transport::Channel, ClusterError> {
-        let uri = format!("http://{}", endpoint);
-        let channel = tonic::transport::Endpoint::from_shared(uri)
+    pub fn with_tls(tls: tonic::transport::ClientTlsConfig) -> Self {
+        Self {
+            tls_config: Some(tls),
+            ..Self::new()
+        }
+    }
+
+    pub fn with_tls_and_auth(tls: tonic::transport::ClientTlsConfig, token: String) -> Self {
+        Self {
+            tls_config: Some(tls),
+            auth_token: Some(token),
+            ..Self::new()
+        }
+    }
+
+    pub fn with_auth(token: String) -> Self {
+        Self {
+            auth_token: Some(token),
+            ..Self::new()
+        }
+    }
+
+    /// Wrap a value in a `tonic::Request` with the auth token attached (if configured).
+    pub fn authorized_request<T>(&self, inner: T) -> tonic::Request<T> {
+        let mut request = tonic::Request::new(inner);
+        if let Some(ref token) = self.auth_token
+            && let Ok(value) = token.parse()
+        {
+            request.metadata_mut().insert("authorization", value);
+        }
+        request
+    }
+
+    async fn connect_channel(&self, endpoint: &str) -> Result<tonic::transport::Channel, ClusterError> {
+        let uri = if self.tls_config.is_some() {
+            format!("https://{}", endpoint)
+        } else {
+            format!("http://{}", endpoint)
+        };
+        let mut ep = tonic::transport::Endpoint::from_shared(uri)
             .map_err(|e| ClusterError::Transport(e.to_string()))?
-            .connect_timeout(CONNECT_TIMEOUT)
-            .connect()
+            .connect_timeout(CONNECT_TIMEOUT);
+
+        if let Some(ref tls) = self.tls_config {
+            ep = ep
+                .tls_config(tls.clone())
+                .map_err(|e| ClusterError::Transport(e.to_string()))?;
+        }
+
+        ep.connect()
             .await
-            .map_err(|e| ClusterError::Transport(e.to_string()))?;
-        Ok(channel)
+            .map_err(|e| ClusterError::Transport(e.to_string()))
     }
 
     pub async fn get_transport(
@@ -48,7 +95,7 @@ impl ConnectionPool {
             return Ok(client.clone());
         }
 
-        let channel = Self::connect_channel(endpoint).await?;
+        let channel = self.connect_channel(endpoint).await?;
         let client = GrainTransportClient::new(channel);
 
         self.transports
@@ -64,7 +111,7 @@ impl ConnectionPool {
             return Ok(client.clone());
         }
 
-        let channel = Self::connect_channel(endpoint).await?;
+        let channel = self.connect_channel(endpoint).await?;
         let client = MembershipClient::new(channel);
 
         self.memberships
@@ -72,6 +119,14 @@ impl ConnectionPool {
         Ok(client)
     }
 
+    /// Remove cached connections for an endpoint.
+    ///
+    /// Called automatically when SWIM declares a member dead. Callers should
+    /// also call this after persistent connection errors to force reconnection.
+    ///
+    /// Note: tonic `Channel` handles reconnection internally for transient
+    /// failures — this method is for permanent removals (dead silos) or
+    /// forcing a fresh connection after repeated errors.
     pub fn remove(&self, endpoint: &str) {
         self.transports.remove(endpoint);
         self.memberships.remove(endpoint);

@@ -37,6 +37,8 @@ pub async fn run_reentrant_mailbox<G: Grain>(
     }
 
     let mut tasks = JoinSet::new();
+    // Cap concurrent handlers to prevent unbounded task growth from message floods
+    const MAX_CONCURRENT: usize = 256;
 
     loop {
         tokio::select! {
@@ -51,6 +53,12 @@ pub async fn run_reentrant_mailbox<G: Grain>(
             msg = timeout(G::idle_timeout(), rx.recv()) => {
                 match msg {
                     Ok(Some(envelope)) => {
+                        // Drain a task if at capacity before spawning another
+                        while tasks.len() >= MAX_CONCURRENT {
+                            if let Some(Err(e)) = tasks.join_next().await {
+                                tracing::warn!(%grain_id, error = %e, "reentrant handler panicked");
+                            }
+                        }
                         tracing::debug!(%grain_id, "reentrant grain dispatching message");
                         let state = state.clone();
                         let ctx = ctx.clone();

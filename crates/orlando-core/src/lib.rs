@@ -21,7 +21,7 @@ pub use envelope::{Envelope, HandleFn, build_ask_envelope, recv_ask_response};
 pub use error::GrainError;
 pub use filter::{FilterChain, GrainCallFilter, GrainCallInfo};
 pub use grain::{Grain, GrainHandler, StatelessWorker};
-pub use grain_context::{ActivationFactory, GrainActivator, GrainContext, PoolFactory};
+pub use grain_context::{ActivationFactory, CancellationToken, GrainActivator, GrainContext, PoolFactory};
 pub use grain_id::GrainId;
 pub use grain_ref::GrainRef;
 pub use message::Message;

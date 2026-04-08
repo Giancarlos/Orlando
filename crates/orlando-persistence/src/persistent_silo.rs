@@ -6,42 +6,67 @@ use std::sync::Arc;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{mpsc, oneshot};
 
-use orlando_core::{Envelope, Grain, GrainActivator, GrainContext, GrainError, GrainId, GrainRef, Message};
+use orlando_core::{Envelope, FilterChain, Grain, GrainActivator, GrainCallFilter, GrainContext, GrainError, GrainId, GrainRef, Message};
 use orlando_runtime::GrainDirectory;
 
 use crate::persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
 use crate::versioned_grain::VersionedGrain;
 use crate::persistent_mailbox;
-use crate::store::StateStore;
+use crate::store::{PersistenceStrategy, StateStore};
 use crate::transaction::TransactionContext;
 
 /// A silo that supports both regular and persistent grains.
 pub struct PersistentSilo {
     directory: Arc<GrainDirectory>,
     store: Arc<dyn StateStore>,
+    filters: FilterChain,
 }
 
 impl PersistentSilo {
     pub fn builder() -> PersistentSiloBuilder {
-        PersistentSiloBuilder { store: None }
+        PersistentSiloBuilder {
+            store: None,
+            filters: Vec::new(),
+        }
     }
 
-    /// Get a reference to a regular (non-persistent) grain.
-    pub fn get_ref<G: Grain>(&self, key: impl Into<String>) -> GrainRef<G> {
-        let ctx = GrainContext::new(
+    fn make_context(&self) -> GrainContext {
+        GrainContext::with_filters(
             GrainId {
                 type_name: "silo",
                 key: String::new(),
             },
             self.directory.clone(),
-        );
-        ctx.get_ref::<G>(key)
+            self.filters.clone(),
+        )
     }
 
-    /// Get a reference to a persistent grain.
+    /// Get a reference to a regular (non-persistent) grain.
+    pub fn get_ref<G: Grain>(&self, key: impl Into<String>) -> GrainRef<G> {
+        self.make_context().get_ref::<G>(key)
+    }
+
+    /// Get a reference to a persistent grain using the default strategy (WriteOnDeactivate).
     /// State is automatically loaded from the store on activation
     /// and saved back on deactivation.
     pub fn persistent_get_ref<G>(&self, key: impl Into<String>) -> GrainRef<G>
+    where
+        G: PersistentGrain,
+        G::State: Serialize + DeserializeOwned,
+    {
+        self.persistent_get_ref_with_strategy::<G>(key, PersistenceStrategy::default())
+    }
+
+    /// Get a reference to a persistent grain with a specific persistence strategy.
+    ///
+    /// - `WriteOnDeactivate` — save only when the grain deactivates (default, lowest overhead).
+    /// - `WriteThrough` — save after every message handler (highest durability).
+    /// - `WriteBack(interval)` — save periodically + on deactivation (balanced).
+    pub fn persistent_get_ref_with_strategy<G>(
+        &self,
+        key: impl Into<String>,
+        strategy: PersistenceStrategy,
+    ) -> GrainRef<G>
     where
         G: PersistentGrain,
         G::State: Serialize + DeserializeOwned,
@@ -60,7 +85,8 @@ impl PersistentSilo {
             Box::new(move |id| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
-                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store).await;
+                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store, strategy)
+                        .await;
                 });
                 (tx, task)
             }),
@@ -88,12 +114,14 @@ impl PersistentSilo {
         let store = self.store.clone();
 
         let activator_for_closure = activator.clone();
+        let strategy = PersistenceStrategy::default();
         let sender = activator.get_or_insert(
             grain_id.clone(),
             Box::new(move |id| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
-                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store).await;
+                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store, strategy)
+                        .await;
                 });
                 (tx, task)
             }),
@@ -102,12 +130,25 @@ impl PersistentSilo {
         TransactionalGrainRef::new(sender, self.store.clone(), grain_id)
     }
 
-    /// Get a reference to a versioned grain.
+    /// Get a reference to a versioned grain using the default strategy (WriteOnDeactivate).
     ///
     /// Versioned grains support automatic state migration on load.
     /// When the stored state version is older than `G::state_version()`,
     /// the migration chain runs to bring the state up to date.
     pub fn versioned_get_ref<G>(&self, key: impl Into<String>) -> GrainRef<G>
+    where
+        G: VersionedGrain,
+        G::State: Serialize + DeserializeOwned,
+    {
+        self.versioned_get_ref_with_strategy::<G>(key, PersistenceStrategy::default())
+    }
+
+    /// Get a reference to a versioned grain with a specific persistence strategy.
+    pub fn versioned_get_ref_with_strategy<G>(
+        &self,
+        key: impl Into<String>,
+        strategy: PersistenceStrategy,
+    ) -> GrainRef<G>
     where
         G: VersionedGrain,
         G::State: Serialize + DeserializeOwned,
@@ -126,8 +167,10 @@ impl PersistentSilo {
             Box::new(move |id| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
-                    persistent_mailbox::run_versioned::<G>(id, rx, activator_for_closure, store)
-                        .await;
+                    persistent_mailbox::run_versioned::<G>(
+                        id, rx, activator_for_closure, store, strategy,
+                    )
+                    .await;
                 });
                 (tx, task)
             }),
@@ -150,6 +193,7 @@ impl std::fmt::Debug for PersistentSilo {
 
 pub struct PersistentSiloBuilder {
     store: Option<Arc<dyn StateStore>>,
+    filters: Vec<Arc<dyn GrainCallFilter>>,
 }
 
 impl PersistentSiloBuilder {
@@ -163,11 +207,19 @@ impl PersistentSiloBuilder {
         self
     }
 
+    /// Add a grain call filter (interceptor) to the silo.
+    /// Filters are called in order on every `ask()` call.
+    pub fn filter(mut self, filter: Arc<dyn GrainCallFilter>) -> Self {
+        self.filters.push(filter);
+        self
+    }
+
     pub fn build(self) -> PersistentSilo {
         let store = self.store.expect("PersistentSilo requires a StateStore — call .store() on the builder");
         PersistentSilo {
             directory: Arc::new(GrainDirectory::new()),
             store,
+            filters: FilterChain::new(self.filters),
         }
     }
 }

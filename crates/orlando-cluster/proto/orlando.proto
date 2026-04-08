@@ -35,6 +35,7 @@ service Membership {
   rpc Ping(PingRequest) returns (PingResponse);
   rpc PingReq(PingReqRequest) returns (PingReqResponse);
   rpc GetMembers(GetMembersRequest) returns (GetMembersResponse);
+  rpc LookupGrain(LookupGrainRequest) returns (LookupGrainResponse);
 }
 
 message SiloAddress {
@@ -105,4 +106,15 @@ message GetMembersRequest {}
 
 message GetMembersResponse {
   repeated SiloAddress members = 1;
+}
+
+message LookupGrainRequest {
+  string grain_type = 1;
+  string grain_key = 2;
+}
+
+message LookupGrainResponse {
+  bool active = 1;
+  string silo_id = 2;
+  string endpoint = 3;
 }

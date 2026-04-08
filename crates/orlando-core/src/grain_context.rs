@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -68,6 +69,29 @@ pub trait GrainActivator: Send + Sync + 'static {
     }
 }
 
+/// Shared cancellation signal for cooperative grain shutdown.
+/// Triggered during drain or rebalance so handlers can exit early.
+#[derive(Clone, Debug, Default)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Signal cancellation. All clones of this token will see it.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Passed to every grain handler and lifecycle hook.
 /// Provides the grain's own identity and the ability to call other grains.
 #[derive(Clone)]
@@ -76,6 +100,7 @@ pub struct GrainContext {
     activator: Arc<dyn GrainActivator>,
     filters: FilterChain,
     request_context: RequestContext,
+    cancellation: CancellationToken,
 }
 
 impl GrainContext {
@@ -85,6 +110,7 @@ impl GrainContext {
             activator,
             filters: FilterChain::empty(),
             request_context: RequestContext::new(),
+            cancellation: CancellationToken::new(),
         }
     }
 
@@ -98,6 +124,7 @@ impl GrainContext {
             activator,
             filters,
             request_context: RequestContext::new(),
+            cancellation: CancellationToken::new(),
         }
     }
 
@@ -127,7 +154,27 @@ impl GrainContext {
             activator: self.activator.clone(),
             filters: self.filters.clone(),
             request_context: ctx,
+            cancellation: self.cancellation.clone(),
         }
+    }
+
+    /// Check if this grain has been asked to shut down (drain or rebalance).
+    /// Long-running handlers should check this periodically and return early
+    /// when true, allowing the grain to deactivate gracefully.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+
+    /// Access the cancellation token directly.
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
+    /// Create a context with a specific cancellation token.
+    /// Used by the runtime to share a token between the mailbox and the context.
+    pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation = token;
+        self
     }
 
     pub fn grain_id(&self) -> &GrainId {

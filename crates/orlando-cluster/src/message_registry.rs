@@ -47,6 +47,11 @@ impl MessageRegistry {
         }
     }
 
+    /// Look up the `&'static str` for a registered grain type name.
+    pub fn grain_type_str(&self, grain_type: &str) -> Option<&'static str> {
+        self.grain_types.get(grain_type).copied()
+    }
+
     /// Register a grain + message combination for remote dispatch.
     ///
     /// This captures the concrete types so the gRPC server can deserialize

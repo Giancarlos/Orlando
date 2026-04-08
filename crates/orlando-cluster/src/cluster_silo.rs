@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
 
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -10,6 +12,7 @@ use orlando_runtime::GrainDirectory;
 use crate::cluster_grain_ref::ClusterGrainRef;
 use crate::connection_pool::ConnectionPool;
 use crate::error::ClusterError;
+use crate::retry::RetryPolicy;
 use crate::failure_detector::{FailureDetector, FailureDetectorConfig, MembershipChange};
 use crate::hash_ring::{HashRing, SiloAddress};
 use crate::placement::{HashBasedPlacement, PlacementStrategy};
@@ -26,13 +29,17 @@ pub struct ClusterSilo {
     local_addr: SiloAddress,
     directory: Arc<GrainDirectory>,
     registry: Arc<MessageRegistry>,
-    ring: Arc<RwLock<HashRing>>,
+    ring: Arc<ArcSwap<HashRing>>,
     pool: Arc<ConnectionPool>,
     change_tx: broadcast::Sender<MembershipChange>,
     failure_detector_config: FailureDetectorConfig,
     shutdown_tx: watch::Sender<bool>,
     swim_state: Arc<tokio::sync::Mutex<crate::swim::SwimState>>,
     placement: Arc<dyn PlacementStrategy>,
+    tls_identity: Option<tonic::transport::Identity>,
+    tls_ca: Option<tonic::transport::Certificate>,
+    auth: Option<Arc<dyn crate::auth::ClusterAuth>>,
+    retry_policy: RetryPolicy,
 }
 
 impl ClusterSilo {
@@ -75,11 +82,10 @@ impl ClusterSilo {
         let key = key.into();
         let grain_type = G::grain_type_name();
 
-        let ring = self.ring.read().expect("ring lock poisoned");
+        let ring = self.ring.load();
         let target = self.placement.place(grain_type, &key, &self.local_addr.silo_id, &ring);
-        drop(ring);
 
-        match target {
+        let grain_ref = match target {
             Some(ref t) if t.silo_id == self.local_addr.silo_id => {
                 let sender = self.local_activate::<G>(&key);
                 ClusterGrainRef::local(sender)
@@ -96,7 +102,9 @@ impl ClusterSilo {
                 let sender = self.local_activate::<G>(&key);
                 ClusterGrainRef::local(sender)
             }
-        }
+        };
+
+        grain_ref.with_retry_policy(self.retry_policy.clone())
     }
 
     fn local_activate<G: Grain>(
@@ -162,20 +170,16 @@ impl ClusterSilo {
             })
             .collect();
 
-        // Add all members to our ring
+        // Add all members to our ring and SWIM state
         {
-            let mut ring = self
-                .ring
-                .write()
-                .map_err(|e| ClusterError::Transport(e.to_string()))?;
-
+            let mut new_ring = (**self.ring.load()).clone();
             for silo in &members {
-                ring.add(silo.clone());
+                new_ring.add(silo.clone());
                 let _ = self.change_tx.send(MembershipChange::SiloJoined(silo.clone()));
             }
+            self.ring.store(Arc::new(new_ring));
         }
 
-        // Add members to SWIM state
         {
             let mut swim = self.swim_state.lock().await;
             for silo in &members {
@@ -214,6 +218,36 @@ impl ClusterSilo {
         Ok(())
     }
 
+    /// Discover and join a cluster using a membership provider.
+    ///
+    /// Resolves members via the provider, then joins through the first
+    /// reachable seed. Equivalent to calling `join_cluster()` with the
+    /// provider's discovered address.
+    pub async fn discover_and_join(
+        &self,
+        provider: &dyn crate::discovery::MembershipProvider,
+    ) -> Result<(), ClusterError> {
+        let members = provider.get_members().await?;
+        for member in &members {
+            let endpoint = member.endpoint();
+            if endpoint == self.local_addr.endpoint() {
+                continue; // skip self
+            }
+            match self.join_cluster(&endpoint).await {
+                Ok(()) => {
+                    tracing::info!(seed = %endpoint, "joined cluster via discovery");
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(seed = %endpoint, error = %e, "failed to join via seed, trying next");
+                }
+            }
+        }
+        Err(ClusterError::Transport(
+            "no reachable seeds found via membership provider".to_string(),
+        ))
+    }
+
     /// Start serving gRPC (grain transport + membership) and background tasks
     /// (failure detector + rebalancer).
     pub async fn serve(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
@@ -226,6 +260,7 @@ impl ClusterSilo {
             self.ring.clone(),
             self.pool.clone(),
             self.local_addr.silo_id.clone(),
+            self.auth.clone(),
         );
 
         // Create failure detector using the shared SWIM state
@@ -247,6 +282,9 @@ impl ClusterSilo {
             self.pool.clone(),
             swim_state,
             self.failure_detector_config.gossip_fanout,
+            self.auth.clone(),
+            self.directory.clone() as Arc<dyn GrainActivator>,
+            self.registry.clone(),
         );
 
         tokio::spawn(detector.run());
@@ -267,7 +305,19 @@ impl ClusterSilo {
             let _ = shutdown_rx.changed().await;
         };
 
-        tonic::transport::Server::builder()
+        let mut server_builder = tonic::transport::Server::builder();
+        if let Some(ref identity) = self.tls_identity {
+            let mut tls_config = tonic::transport::ServerTlsConfig::new()
+                .identity(identity.clone());
+            if let Some(ref ca) = self.tls_ca {
+                tls_config = tls_config.client_ca_root(ca.clone());
+            }
+            server_builder = server_builder
+                .tls_config(tls_config)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        }
+
+        server_builder
             .add_service(GrainTransportServer::new(transport))
             .add_service(MembershipServer::new(membership))
             .serve_with_shutdown(addr, shutdown_signal)
@@ -285,6 +335,11 @@ pub struct ClusterSiloBuilder {
     virtual_nodes: u32,
     failure_detector_config: FailureDetectorConfig,
     placement: Option<Arc<dyn PlacementStrategy>>,
+    tls_identity: Option<tonic::transport::Identity>,
+    tls_ca: Option<tonic::transport::Certificate>,
+    auth: Option<Arc<dyn crate::auth::ClusterAuth>>,
+    auth_token: Option<String>,
+    retry_policy: RetryPolicy,
 }
 
 impl ClusterSiloBuilder {
@@ -297,6 +352,11 @@ impl ClusterSiloBuilder {
             virtual_nodes: 150,
             failure_detector_config: FailureDetectorConfig::default(),
             placement: None,
+            tls_identity: None,
+            tls_ca: None,
+            auth: None,
+            auth_token: None,
+            retry_policy: RetryPolicy::default(),
         }
     }
 
@@ -331,6 +391,37 @@ impl ClusterSiloBuilder {
         self
     }
 
+    /// Configure TLS with a server certificate and private key (PEM-encoded).
+    pub fn tls(mut self, cert_pem: impl AsRef<[u8]>, key_pem: impl AsRef<[u8]>) -> Self {
+        self.tls_identity = Some(tonic::transport::Identity::from_pem(cert_pem, key_pem));
+        self
+    }
+
+    /// Configure a CA certificate for verifying peer certificates (mTLS).
+    pub fn tls_ca(mut self, ca_pem: impl AsRef<[u8]>) -> Self {
+        self.tls_ca = Some(tonic::transport::Certificate::from_pem(ca_pem));
+        self
+    }
+
+    /// Set the authentication handler for validating incoming requests.
+    pub fn auth(mut self, auth: Arc<dyn crate::auth::ClusterAuth>) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    /// Set a token to attach to all outgoing silo-to-silo requests.
+    pub fn auth_token(mut self, token: impl Into<String>) -> Self {
+        self.auth_token = Some(token.into());
+        self
+    }
+
+    /// Set the retry policy applied to remote grain calls. Defaults to 2 retries
+    /// with exponential backoff (100ms base, 2s cap).
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+
     /// Register a grain + message type for remote dispatch on this silo.
     pub fn register<G, M>(mut self) -> Self
     where
@@ -356,7 +447,7 @@ impl ClusterSiloBuilder {
         let mut ring = HashRing::new(self.virtual_nodes);
         ring.add(local_addr.clone());
 
-        let (change_tx, _) = broadcast::channel(64);
+        let (change_tx, _) = broadcast::channel(256);
         let (shutdown_tx, _) = watch::channel(false);
 
         let swim_state = Arc::new(tokio::sync::Mutex::new(
@@ -367,17 +458,43 @@ impl ClusterSiloBuilder {
             .placement
             .unwrap_or_else(|| Arc::new(HashBasedPlacement));
 
+        // Build ConnectionPool with TLS and/or auth token
+        let pool = match (&self.tls_ca, &self.auth_token) {
+            (Some(ca), Some(token)) => {
+                let mut client_tls = tonic::transport::ClientTlsConfig::new()
+                    .ca_certificate(ca.clone());
+                if let Some(ref identity) = self.tls_identity {
+                    client_tls = client_tls.identity(identity.clone());
+                }
+                ConnectionPool::with_tls_and_auth(client_tls, token.clone())
+            }
+            (Some(ca), None) => {
+                let mut client_tls = tonic::transport::ClientTlsConfig::new()
+                    .ca_certificate(ca.clone());
+                if let Some(ref identity) = self.tls_identity {
+                    client_tls = client_tls.identity(identity.clone());
+                }
+                ConnectionPool::with_tls(client_tls)
+            }
+            (None, Some(token)) => ConnectionPool::with_auth(token.clone()),
+            (None, None) => ConnectionPool::new(),
+        };
+
         ClusterSilo {
             local_addr,
             directory: Arc::new(GrainDirectory::new()),
             registry: Arc::new(self.registry),
-            ring: Arc::new(RwLock::new(ring)),
-            pool: Arc::new(ConnectionPool::new()),
+            ring: Arc::new(ArcSwap::from_pointee(ring)),
+            pool: Arc::new(pool),
             change_tx,
             failure_detector_config: self.failure_detector_config,
             shutdown_tx,
             swim_state,
             placement,
+            tls_identity: self.tls_identity,
+            tls_ca: self.tls_ca,
+            auth: self.auth,
+            retry_policy: self.retry_policy,
         }
     }
 }

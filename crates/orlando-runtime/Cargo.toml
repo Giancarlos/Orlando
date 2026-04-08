@@ -10,6 +10,7 @@ async-trait = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+metrics = { workspace = true }
 
 [dev-dependencies]
 orlando-macros = { path = "../orlando-macros" }

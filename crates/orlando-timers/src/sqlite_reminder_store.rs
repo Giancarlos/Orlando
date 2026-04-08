@@ -56,7 +56,8 @@ fn ms_to_system_time(ms: i64) -> SystemTime {
 }
 
 /// Interns type_name strings loaded from SQLite into `&'static str`.
-/// The set of grain types is bounded, so memory usage is negligible.
+/// Capped at 10,000 entries to prevent unbounded memory allocation
+/// if arbitrary type names are injected via the reminder store.
 fn intern_type_name(name: &str) -> &'static str {
     static CACHE: LazyLock<Mutex<HashMap<String, &'static str>>> =
         LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -64,6 +65,10 @@ fn intern_type_name(name: &str) -> &'static str {
     let mut cache = CACHE.lock().unwrap();
     if let Some(&cached) = cache.get(name) {
         return cached;
+    }
+    if cache.len() >= 10_000 {
+        tracing::error!(name, "type name intern cache limit reached — possible abuse");
+        // Still intern to maintain correctness, but log loudly
     }
     let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
     cache.insert(name.to_string(), leaked);

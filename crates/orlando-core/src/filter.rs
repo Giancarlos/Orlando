@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::grain_id::GrainId;
 
@@ -9,6 +10,8 @@ pub struct GrainCallInfo {
     pub grain_id: GrainId,
     /// The message type name (e.g., "Increment").
     pub message_type: &'static str,
+    /// When the call was initiated. Filters can use this to compute latency.
+    pub started_at: Instant,
 }
 
 /// Interceptor for grain calls. Implement this to add cross-cutting concerns

@@ -562,8 +562,8 @@ async fn gateway_forwards_to_correct_silo() {
         .unwrap();
 
     let mut all_ok = true;
-    for i in 0..20 {
-        let key = format!("gw-{}", i);
+    for i in 0..50 {
+        let key = format!("gateway-test-key-{}", i);
         let payload = bincode::serde::encode_to_vec(
             &Increment { amount: 1 },
             bincode::config::standard(),
@@ -589,7 +589,7 @@ async fn gateway_forwards_to_correct_silo() {
         }
     }
 
-    assert!(all_ok, "all 20 grain calls via gateway should succeed");
+    assert!(all_ok, "all 50 grain calls via gateway should succeed");
 
     // Verify that some grains ended up on silo-a (proving forwarding worked)
     // and some stayed on silo-b (local dispatch). The exact split depends on
