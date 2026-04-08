@@ -208,7 +208,7 @@ impl PersistentSilo {
         let activator_for_closure = activator.clone();
         let sender = activator.get_or_insert(
             grain_id.clone(),
-            Box::new(move |id| {
+            Box::new(move |id, _cancellation| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
                     journaled_mailbox::run::<G>(id, rx, activator_for_closure, journal_for_mailbox)

@@ -240,6 +240,7 @@ impl OrlandoClient {
                     payload: payload.clone(),
                     encoding,
                     request_context: HashMap::new(),
+                    message_version: 0,
                 })
                 .await;
 

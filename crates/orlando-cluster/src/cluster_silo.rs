@@ -36,14 +36,10 @@ pub struct ClusterSilo {
     shutdown_tx: watch::Sender<bool>,
     swim_state: Arc<tokio::sync::Mutex<crate::swim::SwimState>>,
     placement: Arc<dyn PlacementStrategy>,
-<<<<<<< HEAD
     tls_identity: Option<tonic::transport::Identity>,
     tls_ca: Option<tonic::transport::Certificate>,
     auth: Option<Arc<dyn crate::auth::ClusterAuth>>,
     retry_policy: RetryPolicy,
-=======
-    shutdown_hooks: std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>,
->>>>>>> worktree-agent-a1e8fa20
 }
 
 impl ClusterSilo {
@@ -70,20 +66,10 @@ impl ClusterSilo {
     }
 
     /// Gracefully shut down: drain all active grains (triggering on_deactivate
-    /// and state persistence), run shutdown hooks, then stop the gRPC server and SWIM task.
+    /// and state persistence), then stop the gRPC server and SWIM task.
     pub async fn shutdown_and_drain(&self) {
         tracing::info!("starting graceful shutdown");
         self.directory.drain().await;
-
-        // Run shutdown hooks after draining
-        let hooks: Vec<Box<dyn FnOnce() + Send>> = {
-            let mut guard = self.shutdown_hooks.lock().expect("shutdown_hooks lock poisoned");
-            std::mem::take(&mut *guard)
-        };
-        for hook in hooks {
-            hook();
-        }
-
         let _ = self.shutdown_tx.send(true);
         tracing::info!("graceful shutdown complete");
     }
@@ -97,7 +83,27 @@ impl ClusterSilo {
         let grain_type = G::grain_type_name();
 
         let ring = self.ring.load();
-        let target = self.placement.place(grain_type, &key, &self.local_addr.silo_id, &ring);
+
+        // Use per-grain placement hint if set, otherwise silo-level strategy
+        let target = match G::placement_hint() {
+            Some("prefer_local") => {
+                crate::placement::PreferLocalPlacement.place(
+                    grain_type, &key, &self.local_addr.silo_id, &ring,
+                )
+            }
+            Some("random") => {
+                crate::placement::RandomPlacement.place(
+                    grain_type, &key, &self.local_addr.silo_id, &ring,
+                )
+            }
+            Some("hash") | None => {
+                self.placement.place(grain_type, &key, &self.local_addr.silo_id, &ring)
+            }
+            Some(unknown) => {
+                tracing::warn!(grain_type, hint = unknown, "unknown placement hint, using silo default");
+                self.placement.place(grain_type, &key, &self.local_addr.silo_id, &ring)
+            }
+        };
 
         let grain_ref = match target {
             Some(ref t) if t.silo_id == self.local_addr.silo_id => {
@@ -349,16 +355,11 @@ pub struct ClusterSiloBuilder {
     virtual_nodes: u32,
     failure_detector_config: FailureDetectorConfig,
     placement: Option<Arc<dyn PlacementStrategy>>,
-<<<<<<< HEAD
     tls_identity: Option<tonic::transport::Identity>,
     tls_ca: Option<tonic::transport::Certificate>,
     auth: Option<Arc<dyn crate::auth::ClusterAuth>>,
     auth_token: Option<String>,
     retry_policy: RetryPolicy,
-=======
-    on_startup: Vec<Box<dyn FnOnce() + Send>>,
-    on_shutdown: Vec<Box<dyn FnOnce() + Send>>,
->>>>>>> worktree-agent-a1e8fa20
 }
 
 impl ClusterSiloBuilder {
@@ -371,16 +372,11 @@ impl ClusterSiloBuilder {
             virtual_nodes: 150,
             failure_detector_config: FailureDetectorConfig::default(),
             placement: None,
-<<<<<<< HEAD
             tls_identity: None,
             tls_ca: None,
             auth: None,
             auth_token: None,
             retry_policy: RetryPolicy::default(),
-=======
-            on_startup: Vec::new(),
-            on_shutdown: Vec::new(),
->>>>>>> worktree-agent-a1e8fa20
         }
     }
 
@@ -415,7 +411,6 @@ impl ClusterSiloBuilder {
         self
     }
 
-<<<<<<< HEAD
     /// Configure TLS with a server certificate and private key (PEM-encoded).
     pub fn tls(mut self, cert_pem: impl AsRef<[u8]>, key_pem: impl AsRef<[u8]>) -> Self {
         self.tls_identity = Some(tonic::transport::Identity::from_pem(cert_pem, key_pem));
@@ -444,17 +439,6 @@ impl ClusterSiloBuilder {
     /// with exponential backoff (100ms base, 2s cap).
     pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = policy;
-=======
-    /// Register a callback that runs after the cluster silo is fully initialized.
-    pub fn on_startup(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
-        self.on_startup.push(Box::new(hook));
-        self
-    }
-
-    /// Register a callback that runs during shutdown, after all grains have drained.
-    pub fn on_shutdown(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
-        self.on_shutdown.push(Box::new(hook));
->>>>>>> worktree-agent-a1e8fa20
         self
     }
 
@@ -494,7 +478,6 @@ impl ClusterSiloBuilder {
             .placement
             .unwrap_or_else(|| Arc::new(HashBasedPlacement));
 
-<<<<<<< HEAD
         // Build ConnectionPool with TLS and/or auth token
         let pool = match (&self.tls_ca, &self.auth_token) {
             (Some(ca), Some(token)) => {
@@ -516,12 +499,6 @@ impl ClusterSiloBuilder {
             (None, Some(token)) => ConnectionPool::with_auth(token.clone()),
             (None, None) => ConnectionPool::new(),
         };
-=======
-        // Run startup hooks
-        for hook in self.on_startup {
-            hook();
-        }
->>>>>>> worktree-agent-a1e8fa20
 
         ClusterSilo {
             local_addr,
@@ -534,14 +511,10 @@ impl ClusterSiloBuilder {
             shutdown_tx,
             swim_state,
             placement,
-<<<<<<< HEAD
             tls_identity: self.tls_identity,
             tls_ca: self.tls_ca,
             auth: self.auth,
             retry_policy: self.retry_policy,
-=======
-            shutdown_hooks: std::sync::Mutex::new(self.on_shutdown),
->>>>>>> worktree-agent-a1e8fa20
         }
     }
 }

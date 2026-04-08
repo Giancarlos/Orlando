@@ -32,6 +32,14 @@ pub trait Grain: Send + 'static {
         std::any::type_name::<Self>()
     }
 
+    /// Optional placement hint for this grain type.
+    ///
+    /// Returns a strategy name: `"hash"`, `"prefer_local"`, `"random"`, or `None`
+    /// (use silo default). Override via `#[grain(state = S, placement = "prefer_local")]`.
+    fn placement_hint() -> Option<&'static str> {
+        None
+    }
+
     /// Whether this grain uses the reentrant mailbox for concurrent message dispatch.
     ///
     /// When true, messages are dequeued into concurrent tasks instead of being
