@@ -7,9 +7,12 @@ use orlando_core::{
 
 use crate::directory::GrainDirectory;
 
+type LifecycleHook = Box<dyn FnOnce() + Send>;
+
 pub struct Silo {
     directory: Arc<GrainDirectory>,
     filters: FilterChain,
+    shutdown_hooks: std::sync::Mutex<Vec<LifecycleHook>>,
 }
 
 impl Default for Silo {
@@ -53,16 +56,36 @@ impl Silo {
     pub fn get_worker_ref<G: StatelessWorker>(&self, key: impl Into<String>) -> WorkerGrainRef<G> {
         self.make_context().get_worker_ref::<G>(key)
     }
+
+    /// Run shutdown hooks. Call this before dropping the silo.
+    pub fn run_shutdown_hooks(&self) {
+        let hooks: Vec<LifecycleHook> = {
+            let mut guard = self.shutdown_hooks.lock().expect("shutdown_hooks lock poisoned");
+            std::mem::take(&mut *guard)
+        };
+        for hook in hooks {
+            hook();
+        }
+    }
 }
 
 impl std::fmt::Debug for Silo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Silo").finish()
+        let hook_count = self
+            .shutdown_hooks
+            .lock()
+            .map(|h| h.len())
+            .unwrap_or(0);
+        f.debug_struct("Silo")
+            .field("shutdown_hooks", &hook_count)
+            .finish()
     }
 }
 
 pub struct SiloBuilder {
     filters: Vec<Arc<dyn GrainCallFilter>>,
+    on_startup: Vec<LifecycleHook>,
+    on_shutdown: Vec<LifecycleHook>,
 }
 
 impl std::fmt::Debug for SiloBuilder {
@@ -77,6 +100,8 @@ impl SiloBuilder {
     fn new() -> Self {
         Self {
             filters: Vec::new(),
+            on_startup: Vec::new(),
+            on_shutdown: Vec::new(),
         }
     }
 
@@ -87,10 +112,28 @@ impl SiloBuilder {
         self
     }
 
+    /// Register a callback that runs after the silo is fully initialized.
+    pub fn on_startup(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
+        self.on_startup.push(Box::new(hook));
+        self
+    }
+
+    /// Register a callback that runs during shutdown, after all grains have drained.
+    pub fn on_shutdown(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
+        self.on_shutdown.push(Box::new(hook));
+        self
+    }
+
     pub fn build(self) -> Silo {
+        // Run startup hooks
+        for hook in self.on_startup {
+            hook();
+        }
+
         Silo {
             directory: Arc::new(GrainDirectory::new()),
             filters: FilterChain::new(self.filters),
+            shutdown_hooks: std::sync::Mutex::new(self.on_shutdown),
         }
     }
 }

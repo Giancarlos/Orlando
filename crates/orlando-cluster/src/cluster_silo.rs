@@ -33,6 +33,7 @@ pub struct ClusterSilo {
     shutdown_tx: watch::Sender<bool>,
     swim_state: Arc<tokio::sync::Mutex<crate::swim::SwimState>>,
     placement: Arc<dyn PlacementStrategy>,
+    shutdown_hooks: std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 impl ClusterSilo {
@@ -59,10 +60,20 @@ impl ClusterSilo {
     }
 
     /// Gracefully shut down: drain all active grains (triggering on_deactivate
-    /// and state persistence), then stop the gRPC server and SWIM task.
+    /// and state persistence), run shutdown hooks, then stop the gRPC server and SWIM task.
     pub async fn shutdown_and_drain(&self) {
         tracing::info!("starting graceful shutdown");
         self.directory.drain().await;
+
+        // Run shutdown hooks after draining
+        let hooks: Vec<Box<dyn FnOnce() + Send>> = {
+            let mut guard = self.shutdown_hooks.lock().expect("shutdown_hooks lock poisoned");
+            std::mem::take(&mut *guard)
+        };
+        for hook in hooks {
+            hook();
+        }
+
         let _ = self.shutdown_tx.send(true);
         tracing::info!("graceful shutdown complete");
     }
@@ -285,6 +296,8 @@ pub struct ClusterSiloBuilder {
     virtual_nodes: u32,
     failure_detector_config: FailureDetectorConfig,
     placement: Option<Arc<dyn PlacementStrategy>>,
+    on_startup: Vec<Box<dyn FnOnce() + Send>>,
+    on_shutdown: Vec<Box<dyn FnOnce() + Send>>,
 }
 
 impl ClusterSiloBuilder {
@@ -297,6 +310,8 @@ impl ClusterSiloBuilder {
             virtual_nodes: 150,
             failure_detector_config: FailureDetectorConfig::default(),
             placement: None,
+            on_startup: Vec::new(),
+            on_shutdown: Vec::new(),
         }
     }
 
@@ -328,6 +343,18 @@ impl ClusterSiloBuilder {
     /// Set the grain placement strategy. Defaults to `HashBasedPlacement`.
     pub fn placement(mut self, strategy: Arc<dyn PlacementStrategy>) -> Self {
         self.placement = Some(strategy);
+        self
+    }
+
+    /// Register a callback that runs after the cluster silo is fully initialized.
+    pub fn on_startup(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
+        self.on_startup.push(Box::new(hook));
+        self
+    }
+
+    /// Register a callback that runs during shutdown, after all grains have drained.
+    pub fn on_shutdown(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
+        self.on_shutdown.push(Box::new(hook));
         self
     }
 
@@ -367,6 +394,11 @@ impl ClusterSiloBuilder {
             .placement
             .unwrap_or_else(|| Arc::new(HashBasedPlacement));
 
+        // Run startup hooks
+        for hook in self.on_startup {
+            hook();
+        }
+
         ClusterSilo {
             local_addr,
             directory: Arc::new(GrainDirectory::new()),
@@ -378,6 +410,7 @@ impl ClusterSiloBuilder {
             shutdown_tx,
             swim_state,
             placement,
+            shutdown_hooks: std::sync::Mutex::new(self.on_shutdown),
         }
     }
 }
