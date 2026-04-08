@@ -28,4 +28,5 @@ pub use message::Message;
 pub use observer::{ObserverSet, SubscriptionId};
 pub use request_context::RequestContext;
 pub use stream::{StreamItem, StreamProducer};
+pub use tokio_util::sync::CancellationToken;
 pub use worker_ref::WorkerGrainRef;

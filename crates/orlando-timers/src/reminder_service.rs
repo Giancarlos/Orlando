@@ -65,10 +65,10 @@ impl ReminderService {
                 let activator_for_mailbox = activator.clone();
                 let sender = activator.get_or_insert(
                     grain_id.clone(),
-                    Box::new(move |id| {
+                    Box::new(move |id, cancellation| {
                         let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                         let task = tokio::spawn(async move {
-                            orlando_core::mailbox::run_mailbox::<G>(id, rx, activator_for_mailbox)
+                            orlando_core::mailbox::run_mailbox::<G>(id, rx, activator_for_mailbox, cancellation)
                                 .await;
                         });
                         (tx, task)

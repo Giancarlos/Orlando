@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::envelope::Envelope;
 use crate::filter::FilterChain;
@@ -14,10 +15,10 @@ use crate::reentrant_mailbox;
 use crate::worker_ref::WorkerGrainRef;
 
 pub type ActivationFactory =
-    Box<dyn FnOnce(GrainId) -> (mpsc::Sender<Envelope>, JoinHandle<()>) + Send>;
+    Box<dyn FnOnce(GrainId, CancellationToken) -> (mpsc::Sender<Envelope>, JoinHandle<()>) + Send>;
 
 pub type PoolFactory =
-    Box<dyn Fn(GrainId) -> (mpsc::Sender<Envelope>, JoinHandle<()>) + Send>;
+    Box<dyn Fn(GrainId, CancellationToken) -> (mpsc::Sender<Envelope>, JoinHandle<()>) + Send>;
 
 /// Trait for the backing store that tracks active grains.
 /// Implemented by GrainDirectory in orlando-runtime.
@@ -34,7 +35,7 @@ pub trait GrainActivator: Send + Sync + 'static {
     }
 
     /// Atomically get an existing sender or create and insert a new activation.
-    /// The closure receives a clone of the grain_id for spawning the mailbox task.
+    /// The closure receives the grain_id and a CancellationToken for the mailbox.
     /// GrainDirectory overrides this with DashMap::entry() for atomicity.
     fn get_or_insert(
         &self,
@@ -44,7 +45,8 @@ pub trait GrainActivator: Send + Sync + 'static {
         if let Some(sender) = self.get_sender(&grain_id) {
             return sender;
         }
-        let (sender, task) = create(grain_id.clone());
+        let token = CancellationToken::new();
+        let (sender, task) = create(grain_id.clone(), token);
         self.register(grain_id, sender.clone(), task);
         sender
     }
@@ -60,7 +62,8 @@ pub trait GrainActivator: Send + Sync + 'static {
     ) -> Vec<mpsc::Sender<Envelope>> {
         let mut senders = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
-            let (sender, task) = create(grain_id.clone());
+            let token = CancellationToken::new();
+            let (sender, task) = create(grain_id.clone(), token);
             self.register(grain_id.clone(), sender.clone(), task);
             senders.push(sender);
         }
@@ -76,6 +79,7 @@ pub struct GrainContext {
     activator: Arc<dyn GrainActivator>,
     filters: FilterChain,
     request_context: RequestContext,
+    cancellation: CancellationToken,
 }
 
 impl GrainContext {
@@ -85,6 +89,7 @@ impl GrainContext {
             activator,
             filters: FilterChain::empty(),
             request_context: RequestContext::new(),
+            cancellation: CancellationToken::new(),
         }
     }
 
@@ -98,7 +103,26 @@ impl GrainContext {
             activator,
             filters,
             request_context: RequestContext::new(),
+            cancellation: CancellationToken::new(),
         }
+    }
+
+    /// Attach a pre-existing cancellation token to this context.
+    /// Used by the activation factory so the mailbox shares the
+    /// same token stored on the `Activation`.
+    pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation = token;
+        self
+    }
+
+    /// Returns `true` if the silo has requested this grain to shut down.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+
+    /// Access the raw cancellation token (e.g. for `tokio::select!`).
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation
     }
 
     /// Access the filter chain.
@@ -127,6 +151,7 @@ impl GrainContext {
             activator: self.activator.clone(),
             filters: self.filters.clone(),
             request_context: ctx,
+            cancellation: self.cancellation.clone(),
         }
     }
 
@@ -155,11 +180,11 @@ impl GrainContext {
         let activator = self.activator.clone();
         let senders = self.activator.get_or_insert_pool(
             grain_id,
-            Box::new(move |id| {
+            Box::new(move |id, cancellation| {
                 let activator_clone = activator.clone();
                 let (tx, rx) = mpsc::channel(crate::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
-                    mailbox::run_mailbox::<G>(id, rx, activator_clone).await;
+                    mailbox::run_mailbox::<G>(id, rx, activator_clone, cancellation).await;
                 });
                 (tx, task)
             }),
@@ -180,15 +205,15 @@ impl GrainContext {
         let filters = self.filters.clone();
         let sender = self.activator.get_or_insert(
             grain_id.clone(),
-            Box::new(move |id| {
+            Box::new(move |id, cancellation| {
                 let (tx, rx) = mpsc::channel(crate::MAILBOX_CAPACITY);
                 let task = if G::reentrant() {
                     tokio::spawn(async move {
-                        reentrant_mailbox::run_reentrant_mailbox::<G>(id, rx, activator).await;
+                        reentrant_mailbox::run_reentrant_mailbox::<G>(id, rx, activator, cancellation).await;
                     })
                 } else {
                     tokio::spawn(async move {
-                        mailbox::run_mailbox::<G>(id, rx, activator).await;
+                        mailbox::run_mailbox::<G>(id, rx, activator, cancellation).await;
                     })
                 };
                 (tx, task)
