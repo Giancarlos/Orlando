@@ -19,6 +19,7 @@ message InvokeRequest {
   bytes payload = 4;
   Encoding encoding = 5;
   map<string, string> request_context = 6;
+  uint32 message_version = 7;
 }
 
 message InvokeResponse {

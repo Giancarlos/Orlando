@@ -83,6 +83,7 @@ impl GrainTransport for GrainTransportService {
                     payload: req.payload,
                     encoding: req.encoding,
                     request_context: req.request_context,
+                    message_version: req.message_version,
                 })
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
@@ -97,6 +98,7 @@ impl GrainTransport for GrainTransportService {
                 &req.grain_type,
                 req.grain_key,
                 &req.message_type,
+                req.message_version,
                 req.payload,
                 encoding,
                 req.request_context,

@@ -116,6 +116,7 @@ impl<G: Grain> ClusterGrainRef<G> {
                         payload,
                         encoding: 0, // Encoding::Bincode — silo-to-silo always uses bincode
                         request_context: RequestContext::current().to_map(),
+                        message_version: M::message_version(),
                     })
                     .await
                     .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;

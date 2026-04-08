@@ -578,6 +578,7 @@ async fn gateway_forwards_to_correct_silo() {
                 payload,
                 encoding: 0, // bincode
                 request_context: std::collections::HashMap::new(),
+                message_version: 0,
             })
             .await
             .unwrap();
@@ -680,6 +681,7 @@ async fn gateway_forwards_protobuf_to_correct_silo() {
                 payload,
                 encoding: 0,
                     request_context: std::collections::HashMap::new(),
+                message_version: 0,
             })
             .await
             .unwrap();

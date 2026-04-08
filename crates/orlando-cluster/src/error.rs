@@ -26,4 +26,7 @@ pub enum ClusterError {
 
     #[error("unsupported encoding for message {0}: {1}")]
     UnsupportedEncoding(String, String),
+
+    #[error("unsupported message version for {0}: got v{1}, supported v{2}")]
+    UnsupportedMessageVersion(String, u32, u32),
 }

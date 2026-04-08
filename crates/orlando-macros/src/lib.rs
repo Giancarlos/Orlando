@@ -189,6 +189,11 @@ impl syn::parse::Parse for GrainArgs {
 /// #[message(result = CounterResult, network, proto)]
 /// #[derive(Serialize, Deserialize, prost::Message)]
 /// struct GetCount { ... }
+///
+/// // For versioned messages (rolling deploy safety):
+/// #[message(result = i64, network, version = 2)]
+/// #[derive(Serialize, Deserialize)]
+/// struct GetCountV2;
 /// ```
 #[proc_macro_attribute]
 pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -207,8 +212,23 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into();
     }
 
+    if args.version.is_some() && !args.network {
+        return syn::Error::new(
+            item_struct.ident.span(),
+            "`version` requires `network` — versioning is only meaningful for network-capable messages",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     let network_impl = if args.network {
         let name_str = name.to_string();
+
+        let version_method = args.version.map(|v| {
+            quote! {
+                fn message_version() -> u32 { #v }
+            }
+        });
 
         let proto_methods = if args.proto {
             quote! {
@@ -243,6 +263,7 @@ pub fn message(attr: TokenStream, item: TokenStream) -> TokenStream {
                 fn message_type_name() -> &'static str {
                     #name_str
                 }
+                #version_method
                 #proto_methods
             }
         }
@@ -266,6 +287,7 @@ struct MessageArgs {
     result: Type,
     network: bool,
     proto: bool,
+    version: Option<u32>,
 }
 
 impl syn::parse::Parse for MessageArgs {
@@ -273,6 +295,7 @@ impl syn::parse::Parse for MessageArgs {
         let mut result = None;
         let mut network = false;
         let mut proto = false;
+        let mut version = None;
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -287,6 +310,11 @@ impl syn::parse::Parse for MessageArgs {
                 }
                 "proto" => {
                     proto = true;
+                }
+                "version" => {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitInt = input.parse()?;
+                    version = Some(lit.base10_parse::<u32>()?);
                 }
                 _ => {
                     return Err(syn::Error::new(
@@ -306,6 +334,7 @@ impl syn::parse::Parse for MessageArgs {
             result,
             network,
             proto,
+            version,
         })
     }
 }
