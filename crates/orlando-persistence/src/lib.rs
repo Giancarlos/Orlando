@@ -22,6 +22,6 @@ pub use persistent_silo::{
     JournaledGrainRef, PersistentSilo, PersistentSiloBuilder, TransactionalGrainRef,
 };
 pub use sqlite_store::SqliteStateStore;
-pub use store::{PersistenceError, PersistenceStrategy, StateStore};
+pub use store::{ETag, PersistenceError, PersistenceStrategy, StateStore};
 pub use transaction::TransactionContext;
 pub use versioned_grain::{VersionedGrain, migrate_state};
