@@ -23,4 +23,7 @@ pub enum GrainError {
 
     #[error("silo activation limit exceeded")]
     SiloOverloaded,
+
+    #[error("deadlock detected: grain call cycle {0}")]
+    DeadlockDetected(String),
 }

@@ -8,6 +8,7 @@ use crate::error::GrainError;
 use crate::grain::GrainHandler;
 use crate::grain_context::GrainContext;
 use crate::message::Message;
+use crate::request_context::RequestContext;
 
 pub type HandleFn = Box<
     dyn for<'a> FnOnce(
@@ -62,6 +63,11 @@ where
 {
     let (tx, rx) = oneshot::channel::<Box<dyn Any + Send>>();
 
+    // Capture the caller's request context now (at ask-time, inside the caller's task).
+    // This will be restored inside the target grain's mailbox task so the call chain
+    // propagates across task boundaries.
+    let caller_ctx = RequestContext::current();
+
     let envelope = Envelope::with_label(
         Box::new(
             move |state_any: &mut (dyn Any + Send), ctx: &GrainContext|
@@ -72,7 +78,14 @@ where
                     return Box::pin(async {});
                 };
                 Box::pin(async move {
-                    let result = <G as GrainHandler<M>>::handle(state, msg, ctx).await;
+                    // Restore the caller's context, then add this grain to the call chain
+                    // so outgoing grain calls from this handler see the updated chain
+                    // and can detect circular call cycles (deadlock).
+                    let req_ctx = caller_ctx
+                        .with_call_chain_entry(ctx.grain_id());
+                    let result = req_ctx.scope(async {
+                        <G as GrainHandler<M>>::handle(state, msg, ctx).await
+                    }).await;
                     let _ = tx.send(Box::new(result) as Box<dyn Any + Send>);
                 })
             },
