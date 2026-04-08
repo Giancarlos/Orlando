@@ -76,7 +76,28 @@ impl ClusterSilo {
         let grain_type = G::grain_type_name();
 
         let ring = self.ring.read().expect("ring lock poisoned");
-        let target = self.placement.place(grain_type, &key, &self.local_addr.silo_id, &ring);
+
+        // Use per-grain placement hint if set, otherwise silo-level strategy
+        let target = match G::placement_hint() {
+            Some("prefer_local") => {
+                crate::placement::PreferLocalPlacement.place(
+                    grain_type, &key, &self.local_addr.silo_id, &ring,
+                )
+            }
+            Some("random") => {
+                crate::placement::RandomPlacement.place(
+                    grain_type, &key, &self.local_addr.silo_id, &ring,
+                )
+            }
+            Some("hash") | None => {
+                // "hash" or no hint — use silo-level strategy (which defaults to hash)
+                self.placement.place(grain_type, &key, &self.local_addr.silo_id, &ring)
+            }
+            Some(unknown) => {
+                tracing::warn!(grain_type, hint = unknown, "unknown placement hint, using silo default");
+                self.placement.place(grain_type, &key, &self.local_addr.silo_id, &ring)
+            }
+        };
         drop(ring);
 
         match target {
