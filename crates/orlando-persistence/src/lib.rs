@@ -13,6 +13,6 @@ pub use memory_store::InMemoryStateStore;
 pub use persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
 pub use persistent_silo::{PersistentSilo, PersistentSiloBuilder, TransactionalGrainRef};
 pub use sqlite_store::SqliteStateStore;
-pub use store::{PersistenceError, StateStore};
+pub use store::{ETag, PersistenceError, StateStore};
 pub use transaction::TransactionContext;
 pub use versioned_grain::{VersionedGrain, migrate_state};
