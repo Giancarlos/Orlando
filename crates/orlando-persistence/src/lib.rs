@@ -16,3 +16,9 @@ pub use sqlite_store::SqliteStateStore;
 pub use store::{PersistenceError, StateStore};
 pub use transaction::TransactionContext;
 pub use versioned_grain::{VersionedGrain, migrate_state};
+
+#[cfg(feature = "redis")]
+mod redis_store;
+
+#[cfg(feature = "redis")]
+pub use redis_store::RedisStateStore;
