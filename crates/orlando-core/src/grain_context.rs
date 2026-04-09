@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::envelope::Envelope;
+use crate::extensions::Extensions;
 use crate::filter::FilterChain;
 use crate::request_context::RequestContext;
 use crate::grain::{Grain, StatelessWorker};
@@ -76,6 +77,7 @@ pub struct GrainContext {
     activator: Arc<dyn GrainActivator>,
     filters: FilterChain,
     request_context: RequestContext,
+    extensions: Extensions,
 }
 
 impl GrainContext {
@@ -85,6 +87,7 @@ impl GrainContext {
             activator,
             filters: FilterChain::empty(),
             request_context: RequestContext::new(),
+            extensions: Extensions::new(),
         }
     }
 
@@ -98,6 +101,7 @@ impl GrainContext {
             activator,
             filters,
             request_context: RequestContext::new(),
+            extensions: Extensions::new(),
         }
     }
 
@@ -127,7 +131,14 @@ impl GrainContext {
             activator: self.activator.clone(),
             filters: self.filters.clone(),
             request_context: ctx,
+            extensions: self.extensions.clone(),
         }
+    }
+
+    /// Access per-grain extensions. Extensions are shared across all clones
+    /// of this context (within the same activation).
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
     }
 
     pub fn grain_id(&self) -> &GrainId {
@@ -202,6 +213,7 @@ impl std::fmt::Debug for GrainContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GrainContext")
             .field("grain_id", &self.grain_id)
+            .field("extensions", &self.extensions)
             .finish()
     }
 }
