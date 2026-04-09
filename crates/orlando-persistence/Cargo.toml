@@ -14,5 +14,9 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 sqlx = { workspace = true }
 
+[features]
+default = []
+postgres = []
+
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

@@ -14,33 +14,63 @@ This model was pioneered by [Microsoft Orleans](https://www.microsoft.com/en-us/
 
 ## Features
 
-- **Single-silo and clustered** — Start with a single `Silo` for local development, scale to a `ClusterSilo` with gRPC transport and consistent-hashing placement.
-- **Persistent state** — Grain state can be automatically saved on deactivation and restored on activation via pluggable backends (in-memory, file, SQLite).
-- **Timers and reminders** — Volatile timers fire while a grain is active. Durable reminders survive restarts via a persistent store.
-- **Proc macros** — `#[grain]`, `#[message]`, and `#[grain_handler]` eliminate boilerplate.
-- **Clustering** — Gossip-based membership, SWIM-style failure detection, and automatic grain rebalancing on node join/leave.
+### Core Runtime
+- **Turn-based execution** — Each grain processes one message at a time via a mailbox loop. Handlers are `async fn` with exclusive `&mut State`.
+- **Reentrant grains** — Opt-in concurrent message dispatch via `#[grain(reentrant)]`. Multiple handlers run concurrently, state access serialized by async mutex.
+- **Stateless workers** — Pool of identical grain instances for compute-heavy workloads. Round-robin dispatch via `#[grain(stateless_worker)]`.
+- **Typed grain references** — `GrainRef<G>` is a cheap, cloneable handle. `.ask(msg).await` sends a message and returns the reply.
+- **Grain call filters** — Cross-cutting interceptors (logging, metrics, auth) on every `ask()` call via `GrainCallFilter` trait.
+- **Request context propagation** — Key-value context (trace IDs, tenant IDs) flows automatically through grain-to-grain call chains, including cross-silo.
+- **Backpressure** — `try_ask()` fails immediately if the mailbox is full. `mailbox_pressure()` reports utilization (0.0–1.0). `max_activations` caps total grains per silo.
+- **Deadlock detection** — Circular grain call chains (A calls B calls A) are detected and return `GrainError::DeadlockDetected` instead of hanging.
+- **Cancellation tokens** — Handlers can check `ctx.is_cancelled()` for cooperative shutdown during drain/rebalance.
+- **Silo lifecycle hooks** — `on_startup` / `on_shutdown` callbacks on `SiloBuilder`.
+- **Proc macros** — `#[grain]`, `#[message]`, `#[grain_handler]` eliminate boilerplate.
 
-## Core Concepts
+### Persistence
+- **Automatic state persistence** — Grain state is loaded on activation and saved on deactivation via pluggable backends.
+- **Configurable persistence strategy** — `WriteOnDeactivate` (default), `WriteThrough` (save after every message), `WriteBack(Duration)` (periodic save).
+- **Transactional grains** — Automatic rollback on handler failure via `TransactionalGrainRef`.
+- **State versioning / migration** — `VersionedGrain` with migration chains (`v0 -> v1 -> v2`) for schema evolution.
+- **Event sourcing** — `JournaledGrain` appends events to a journal, replays on activation. Automatic snapshots.
+- **Optimistic concurrency** — ETags on persisted state detect concurrent writes (`EtagMismatch` error).
+- **Backends** — `InMemoryStateStore`, `FileStateStore`, `SqliteStateStore`.
 
-| Concept | What it is |
-|---|---|
-| **Grain** | A virtual actor. Defines a `State` type and optional lifecycle hooks. |
-| **Message** | A request sent to a grain. Declares the reply type it expects back. |
-| **GrainHandler** | Implement once per message type your grain handles. One grain can handle many message types. |
-| **GrainRef** | A cheap, cloneable handle to a grain. Call `.ask(msg).await` to send a message and get a reply. |
-| **GrainContext** | Passed to handlers. Provides the grain's identity and `get_ref()` for calling other grains. |
-| **Silo** | The runtime host. Owns the grain directory and activates grains on demand. |
+### Timers and Reminders
+- **Volatile timers** — Periodic messages into a grain's mailbox. Cancelled on deactivation or handle drop.
+- **Durable reminders** — Persisted schedules that survive restarts. `InMemoryReminderStore` and `SqliteReminderStore`.
+
+### Clustering
+- **gRPC transport** — Silo-to-silo communication via tonic. Dual encoding: bincode (internal) + protobuf (external clients).
+- **Consistent hashing** — Deterministic grain placement via FNV-1a hash ring with configurable virtual nodes.
+- **SWIM failure detection** — Suspicion protocol with direct pings, indirect pings, configurable timeouts, and gossip piggybacking.
+- **Automatic rebalancing** — Grains migrate gracefully on node join/leave (on_deactivate runs, state persists).
+- **Distributed grain directory** — Cluster-wide activation lookup prevents duplicate activations during ring transitions.
+- **Gateway forwarding** — Any silo can accept a grain call and route it to the correct owner transparently.
+- **Placement strategies** — `HashBasedPlacement` (default), `PreferLocalPlacement`, `RandomPlacement`. Per-grain hints via `#[grain(placement = "prefer_local")]`.
+- **Message versioning** — Versioned message types for safe rolling deploys across silos.
+- **Retry policy** — Configurable exponential backoff on transient remote call failures. Application errors never retried.
+- **TLS and authentication** — `ServerTlsConfig` / `ClientTlsConfig` for encrypted transport. Pluggable `ClusterAuth` trait with `SharedSecretAuth` included.
+- **Service discovery** — `MembershipProvider` trait with `StaticSeedProvider` and `DnsMembershipProvider` (Kubernetes headless services).
+
+### Observability
+- **Metrics** — `MetricsFilter` records `calls_total`, `call_duration_seconds`, `errors_total` per grain type. `activations_active` gauge. Uses the `metrics` crate (backend-agnostic — wire in Prometheus, Datadog, etc.).
+- **Structured tracing** — Every activation, deactivation, message dispatch, and failure logged via `tracing`.
+
+### External Clients
+- **Client SDK** — `orlando-client` crate for non-silo processes. Connects to any silo, discovers the cluster, routes via local hash ring. Typed (bincode) and untyped (protobuf) message support. Automatic retry with membership refresh on stale ring.
 
 ## Crate Layout
 
 | Crate | Purpose |
 |---|---|
-| `orlando-core` | Traits, types, and the mailbox loop |
-| `orlando-runtime` | Silo, grain directory, activation management |
+| `orlando-core` | Grain/Message/GrainHandler traits, mailbox loop, filters, observers, streams, request context, cancellation |
+| `orlando-runtime` | Silo, grain directory, activation management, metrics filter, lifecycle hooks |
 | `orlando-macros` | `#[grain]`, `#[message]`, `#[grain_handler]` proc macros |
-| `orlando-persistence` | Persistent grain state with pluggable backends (in-memory, file, SQLite) |
+| `orlando-persistence` | Persistent/transactional/versioned/journaled grains, state stores, ETags |
 | `orlando-timers` | Volatile timers and durable reminders |
-| `orlando-cluster` | Multi-silo clustering with gRPC, consistent hashing, gossip, and failure detection |
+| `orlando-cluster` | Multi-silo clustering, gRPC transport, SWIM, placement, TLS, auth, retry, discovery |
+| `orlando-client` | External client SDK for non-silo processes |
 
 ## Quick Start
 
@@ -85,29 +115,28 @@ async fn main() {
 
 ## Persistence
 
-Grain state can be automatically saved to a backend and restored on reactivation:
-
 ```rust
-use orlando_persistence::{PersistentGrain, PersistentSilo, SqliteStateStore};
+use orlando_persistence::{PersistentSilo, PersistenceStrategy, SqliteStateStore};
 
 let store = SqliteStateStore::new("sqlite:orlando.db").await?;
 let silo = PersistentSilo::builder().store(store).build();
 
+// Write-on-deactivate (default)
 let counter = silo.persistent_get_ref::<PersistentCounter>("demo");
-counter.ask(Increment { amount: 10 }).await?;
 
-// After idle deactivation, state is saved to SQLite.
-// On next access, state is restored automatically.
+// Write-through (save after every message)
+let counter = silo.persistent_get_ref_with_strategy::<PersistentCounter>(
+    "demo",
+    PersistenceStrategy::WriteThrough,
+);
 ```
 
 Available backends: `InMemoryStateStore`, `FileStateStore`, `SqliteStateStore`.
 
 ## Clustering
 
-Multiple silos form a cluster with automatic grain placement via consistent hashing:
-
 ```rust
-use orlando_cluster::ClusterSilo;
+use orlando_cluster::{ClusterSilo, SharedSecretAuth, RetryPolicy};
 
 let silo = ClusterSilo::builder()
     .host("127.0.0.1")
@@ -115,19 +144,33 @@ let silo = ClusterSilo::builder()
     .silo_id("silo-a")
     .register::<Counter, Increment>()
     .register::<Counter, GetCount>()
+    .auth(Arc::new(SharedSecretAuth::new("my-cluster-secret")))
+    .auth_token("my-cluster-secret")
+    .retry_policy(RetryPolicy::with_retries(3))
     .build();
 
 tokio::spawn(async move { silo.serve().await.unwrap() });
-
-// Join an existing cluster
 silo.join_cluster("127.0.0.1:9000").await?;
 
-// Grain calls are transparently routed to the owning silo
+// Calls are transparently routed to the owning silo
 let counter = silo.get_ref::<Counter>("my-counter");
 counter.ask(Increment { amount: 1 }).await?;
 ```
 
-Messages must implement `NetworkMessage` (or use `#[message(result = T, network)]`) and derive `Serialize`/`Deserialize`.
+## External Clients
+
+```rust
+use orlando_client::OrlandoClient;
+
+let client = OrlandoClient::connect("127.0.0.1:9001").await?;
+let counter = client.grain("Counter", "my-counter");
+
+// Typed (Rust clients sharing message types)
+let result: i64 = counter.ask(Increment { amount: 5 }).await?;
+
+// Untyped (any language via protobuf)
+let response_bytes = counter.ask_proto("Increment", payload_bytes).await?;
+```
 
 ## Examples
 
@@ -137,6 +180,48 @@ cargo run -p orlando-runtime --example chat_room             # grain-to-grain ca
 cargo run -p orlando-persistence --example persistent_counter # SQLite persistence
 cargo run -p orlando-timers --example reminders              # durable reminders
 cargo run -p orlando-cluster --example cluster               # two-silo cluster
+```
+
+## Orleans Feature Comparison
+
+| Feature | Orleans | Orlando | Notes |
+|---------|---------|---------|-------|
+| Virtual actor model | Yes | Yes | Grains with identity-based addressing |
+| Turn-based execution | Yes | Yes | Single-threaded mailbox loop |
+| Reentrancy | At await points | Concurrent dispatch | Different model, same goal |
+| Stateless workers | Yes | Yes | Pooled activations, round-robin |
+| Persistent state | Yes | Yes | Pluggable backends, write-through/write-back |
+| Transactional state | Yes | Single-grain | No distributed transactions |
+| State versioning | Yes | Yes | Migration chains |
+| Event sourcing | JournaledGrain | JournaledGrain | Append events, replay, snapshots |
+| Timers | Yes | Yes | Volatile timers |
+| Reminders | Yes | Yes | Durable, persist to SQLite |
+| Observers / pub-sub | Yes | Yes | ObserverSet, fire-and-forget |
+| Streaming | Yes | Yes | StreamProducer/StreamItem |
+| Clustering | Yes | Yes | gRPC, consistent hashing, SWIM |
+| Grain directory | Distributed | Cluster-wide lookup | Prevents duplicate activations |
+| Failure detection | Yes | Yes | SWIM with suspicion, indirect pings |
+| Placement strategies | Yes | Yes | Hash, prefer-local, random, per-grain hints |
+| Gateway/forwarding | Yes | Yes | Any silo routes to owner |
+| Call filters | Yes | Yes | Before/after interceptors |
+| Request context | Yes | Yes | Cross-silo propagation |
+| Deadlock detection | Yes | Yes | Call chain tracking |
+| Metrics | Dashboard | metrics crate | No built-in dashboard |
+| TLS | Yes | Yes | mTLS, server/client certs |
+| Authentication | Yes | Yes | Pluggable trait, shared-secret included |
+| Service discovery | Azure, K8s, Consul | DNS, static seeds | No cloud-specific providers yet |
+| Retry policies | Yes | Yes | Exponential backoff, transient-only |
+| Client SDK | Orleans.Client | orlando-client | Typed + protobuf |
+| Multi-cluster | Yes | No | Single cluster only |
+| Grain extensions | Yes | No | |
+| Distributed transactions | Yes | No | Single-grain only |
+| Dashboard UI | Yes | No | Use Prometheus + Grafana |
+
+## Testing
+
+```bash
+cargo test --workspace                          # 101 tests
+cargo clippy --workspace -- -D warnings         # lint check
 ```
 
 ## License

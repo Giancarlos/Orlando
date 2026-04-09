@@ -9,6 +9,9 @@ pub(crate) mod persistent_mailbox;
 mod persistent_silo;
 mod sqlite_store;
 mod store;
+
+#[cfg(feature = "postgres")]
+mod postgres_store;
 mod transaction;
 mod versioned_grain;
 
@@ -22,6 +25,8 @@ pub use persistent_silo::{
     JournaledGrainRef, PersistentSilo, PersistentSiloBuilder, TransactionalGrainRef,
 };
 pub use sqlite_store::SqliteStateStore;
+#[cfg(feature = "postgres")]
+pub use postgres_store::PostgresStateStore;
 pub use store::{ETag, PersistenceError, PersistenceStrategy, StateStore};
 pub use transaction::TransactionContext;
 pub use versioned_grain::{VersionedGrain, migrate_state};
