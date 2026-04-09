@@ -1,5 +1,6 @@
 mod file_store;
 mod memory_store;
+mod multi_transaction;
 mod persistent_grain;
 pub(crate) mod persistent_mailbox;
 mod persistent_silo;
@@ -10,6 +11,7 @@ mod versioned_grain;
 
 pub use file_store::FileStateStore;
 pub use memory_store::InMemoryStateStore;
+pub use multi_transaction::{TransactionCoordinator, TransactionError, TxId};
 pub use persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
 pub use persistent_silo::{PersistentSilo, PersistentSiloBuilder, TransactionalGrainRef};
 pub use sqlite_store::SqliteStateStore;
