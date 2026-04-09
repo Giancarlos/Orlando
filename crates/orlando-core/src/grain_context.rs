@@ -5,6 +5,7 @@ use tokio::task::JoinHandle;
 pub use tokio_util::sync::CancellationToken;
 
 use crate::envelope::Envelope;
+use crate::extensions::Extensions;
 use crate::filter::FilterChain;
 use crate::request_context::RequestContext;
 use crate::grain::{Grain, StatelessWorker};
@@ -80,6 +81,7 @@ pub struct GrainContext {
     filters: FilterChain,
     request_context: RequestContext,
     cancellation: CancellationToken,
+    extensions: Extensions,
 }
 
 impl GrainContext {
@@ -90,6 +92,7 @@ impl GrainContext {
             filters: FilterChain::empty(),
             request_context: RequestContext::new(),
             cancellation: CancellationToken::new(),
+            extensions: Extensions::new(),
         }
     }
 
@@ -104,6 +107,7 @@ impl GrainContext {
             filters,
             request_context: RequestContext::new(),
             cancellation: CancellationToken::new(),
+            extensions: Extensions::new(),
         }
     }
 
@@ -152,7 +156,14 @@ impl GrainContext {
             filters: self.filters.clone(),
             request_context: ctx,
             cancellation: self.cancellation.clone(),
+            extensions: self.extensions.clone(),
         }
+    }
+
+    /// Access per-grain extensions. Extensions are shared across all clones
+    /// of this context (within the same activation).
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
     }
 
     pub fn grain_id(&self) -> &GrainId {
@@ -227,6 +238,7 @@ impl std::fmt::Debug for GrainContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GrainContext")
             .field("grain_id", &self.grain_id)
+            .field("extensions", &self.extensions)
             .finish()
     }
 }

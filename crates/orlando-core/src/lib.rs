@@ -3,6 +3,7 @@ pub const MAILBOX_CAPACITY: usize = 256;
 
 mod envelope;
 mod error;
+mod extensions;
 mod filter;
 mod grain;
 mod observer;
@@ -19,6 +20,7 @@ mod worker_ref;
 
 pub use envelope::{Envelope, HandleFn, build_ask_envelope, recv_ask_response};
 pub use error::GrainError;
+pub use extensions::Extensions;
 pub use filter::{FilterChain, GrainCallFilter, GrainCallInfo};
 pub use grain::{Grain, GrainHandler, StatelessWorker};
 pub use grain_context::{ActivationFactory, CancellationToken, GrainActivator, GrainContext, PoolFactory};

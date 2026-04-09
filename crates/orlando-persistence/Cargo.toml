@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 redis = ["fred"]
+postgres = []
 
 [dependencies]
 orlando-core = { path = "../orlando-core" }
@@ -19,10 +20,6 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 sqlx = { workspace = true }
 fred = { workspace = true, optional = true }
-
-[features]
-default = []
-postgres = []
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
