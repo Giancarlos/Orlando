@@ -3,6 +3,10 @@ name = "orlando-persistence"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+redis = ["fred"]
+
 [dependencies]
 orlando-core = { path = "../orlando-core" }
 orlando-runtime = { path = "../orlando-runtime" }
@@ -13,6 +17,7 @@ bincode = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 sqlx = { workspace = true }
+fred = { workspace = true, optional = true }
 
 [features]
 default = []

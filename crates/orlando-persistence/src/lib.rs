@@ -30,3 +30,9 @@ pub use postgres_store::PostgresStateStore;
 pub use store::{ETag, PersistenceError, PersistenceStrategy, StateStore};
 pub use transaction::TransactionContext;
 pub use versioned_grain::{VersionedGrain, migrate_state};
+
+#[cfg(feature = "redis")]
+mod redis_store;
+
+#[cfg(feature = "redis")]
+pub use redis_store::RedisStateStore;
