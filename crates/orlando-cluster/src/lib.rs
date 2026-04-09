@@ -1,6 +1,7 @@
 mod cluster_grain_ref;
 mod cluster_silo;
 mod connection_pool;
+pub mod discovery;
 mod error;
 mod failure_detector;
 mod hash_ring;
@@ -26,5 +27,8 @@ pub use membership::MembershipService;
 pub use message_registry::MessageRegistry;
 pub use network_message::{Encoding, NetworkMessage};
 pub use placement::{HashBasedPlacement, PlacementStrategy, PreferLocalPlacement, RandomPlacement};
+pub use discovery::{DnsMembershipProvider, MembershipProvider, StaticSeedProvider};
+#[cfg(feature = "consul")]
+pub use discovery::ConsulMembershipProvider;
 pub use rebalancer::Rebalancer;
 pub use transport::GrainTransportService;

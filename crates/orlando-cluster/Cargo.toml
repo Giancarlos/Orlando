@@ -3,6 +3,10 @@ name = "orlando-cluster"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+consul = ["dep:reqwest", "dep:serde_json"]
+
 [dependencies]
 orlando-core = { path = "../orlando-core" }
 orlando-runtime = { path = "../orlando-runtime" }
@@ -17,6 +21,8 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
 fastrand = "2"
+reqwest = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
