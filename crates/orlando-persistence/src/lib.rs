@@ -4,6 +4,7 @@ mod journaled_grain;
 pub(crate) mod journaled_mailbox;
 mod memory_journal_store;
 mod memory_store;
+mod multi_transaction;
 mod persistent_grain;
 pub(crate) mod persistent_mailbox;
 mod persistent_silo;
@@ -20,6 +21,7 @@ pub use journal_store::{JournalEntry, JournalStore};
 pub use journaled_grain::{JournaledGrain, JournaledHandler};
 pub use memory_journal_store::InMemoryJournalStore;
 pub use memory_store::InMemoryStateStore;
+pub use multi_transaction::{TransactionCoordinator, TransactionError, TxId};
 pub use persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
 pub use persistent_silo::{
     JournaledGrainRef, PersistentSilo, PersistentSiloBuilder, TransactionalGrainRef,
