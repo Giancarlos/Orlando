@@ -106,3 +106,35 @@ message GetMembersRequest {}
 message GetMembersResponse {
   repeated SiloAddress members = 1;
 }
+
+// Cross-cluster grain forwarding (GSI).
+service ClusterGateway {
+    rpc ForwardInvoke(ForwardInvokeRequest) returns (ForwardInvokeResponse);
+    rpc ClusterPing(ClusterPingRequest) returns (ClusterPingResponse);
+}
+
+message ForwardInvokeRequest {
+    string grain_type = 1;
+    string grain_key = 2;
+    string message_type = 3;
+    bytes payload = 4;
+    Encoding encoding = 5;
+    map<string, string> request_context = 6;
+    string source_cluster_id = 7;
+}
+
+message ForwardInvokeResponse {
+    bytes payload = 1;
+    string error = 2;
+    Encoding encoding = 3;
+}
+
+message ClusterPingRequest {
+    string cluster_id = 1;
+}
+
+message ClusterPingResponse {
+    string cluster_id = 1;
+    uint32 silo_count = 2;
+    uint32 active_grains = 3;
+}

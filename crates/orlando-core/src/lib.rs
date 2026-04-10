@@ -1,6 +1,7 @@
 /// Default capacity for grain mailbox channels.
 pub const MAILBOX_CAPACITY: usize = 256;
 
+mod cluster_id;
 mod envelope;
 mod error;
 mod filter;
@@ -17,6 +18,7 @@ mod stream;
 pub mod testing;
 mod worker_ref;
 
+pub use cluster_id::ClusterId;
 pub use envelope::{Envelope, HandleFn, build_ask_envelope, recv_ask_response};
 pub use error::GrainError;
 pub use filter::{FilterChain, GrainCallFilter, GrainCallInfo};

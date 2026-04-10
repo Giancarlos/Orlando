@@ -4,6 +4,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 
 use crate::error::ClusterError;
+use crate::proto::cluster_gateway_client::ClusterGatewayClient;
 use crate::proto::grain_transport_client::GrainTransportClient;
 use crate::proto::membership_client::MembershipClient;
 
@@ -13,6 +14,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct ConnectionPool {
     transports: DashMap<String, GrainTransportClient<tonic::transport::Channel>>,
     memberships: DashMap<String, MembershipClient<tonic::transport::Channel>>,
+    gateways: DashMap<String, ClusterGatewayClient<tonic::transport::Channel>>,
 }
 
 impl Default for ConnectionPool {
@@ -26,6 +28,7 @@ impl ConnectionPool {
         Self {
             transports: DashMap::new(),
             memberships: DashMap::new(),
+            gateways: DashMap::new(),
         }
     }
 
@@ -72,8 +75,25 @@ impl ConnectionPool {
         Ok(client)
     }
 
+    pub async fn get_gateway(
+        self: &Arc<Self>,
+        endpoint: &str,
+    ) -> Result<ClusterGatewayClient<tonic::transport::Channel>, ClusterError> {
+        if let Some(client) = self.gateways.get(endpoint) {
+            return Ok(client.clone());
+        }
+
+        let channel = Self::connect_channel(endpoint).await?;
+        let client = ClusterGatewayClient::new(channel);
+
+        self.gateways
+            .insert(endpoint.to_string(), client.clone());
+        Ok(client)
+    }
+
     pub fn remove(&self, endpoint: &str) {
         self.transports.remove(endpoint);
         self.memberships.remove(endpoint);
+        self.gateways.remove(endpoint);
     }
 }

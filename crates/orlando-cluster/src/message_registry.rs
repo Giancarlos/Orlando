@@ -161,6 +161,17 @@ impl MessageRegistry {
         self.handlers.insert((grain_type, message_type), dispatch);
     }
 
+    /// Resolve a grain type string to its static str reference.
+    /// Falls back to a leaked string if the grain type is not registered.
+    pub fn resolve_grain_type(&self, grain_type: &str) -> &'static str {
+        if let Some(&s) = self.grain_types.get(grain_type) {
+            return s;
+        }
+        // Fallback: leak the string so we get a &'static str.
+        // This only happens for unknown grain types (which will fail dispatch anyway).
+        Box::leak(grain_type.to_string().into_boxed_str())
+    }
+
     /// Dispatch an incoming remote call to the registered handler.
     #[allow(clippy::too_many_arguments)]
     pub async fn dispatch(
