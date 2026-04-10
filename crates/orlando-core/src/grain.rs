@@ -40,6 +40,15 @@ pub trait Grain: Send + 'static {
         None
     }
 
+    /// Named storage provider for this grain's persisted state.
+    ///
+    /// When using `PersistentSilo` with multiple registered stores,
+    /// this determines which backend is used. Defaults to `"default"`.
+    /// Override via `#[grain(state = S, storage = "postgres")]`.
+    fn storage_provider() -> &'static str {
+        "default"
+    }
+
     /// Whether this grain uses the reentrant mailbox for concurrent message dispatch.
     ///
     /// When true, messages are dequeued into concurrent tasks instead of being

@@ -66,6 +66,12 @@ pub fn grain(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     });
 
+    let storage_provider = args.storage.as_ref().map(|s| {
+        quote! {
+            fn storage_provider() -> &'static str { #s }
+        }
+    });
+
     let stateless_worker_impl = if args.stateless_worker {
         let max_act = args.max_activations.map(|n| {
             quote! {
@@ -92,6 +98,7 @@ pub fn grain(attr: TokenStream, item: TokenStream) -> TokenStream {
             #grain_type_name
             #reentrant
             #placement_hint
+            #storage_provider
         }
 
         #stateless_worker_impl
@@ -108,6 +115,7 @@ struct GrainArgs {
     grain_name: Option<String>,
     ask_timeout_secs: Option<u64>,
     placement: Option<String>,
+    storage: Option<String>,
 }
 
 impl syn::parse::Parse for GrainArgs {
@@ -120,6 +128,7 @@ impl syn::parse::Parse for GrainArgs {
         let mut grain_name = None;
         let mut ask_timeout_secs = None;
         let mut placement = None;
+        let mut storage = None;
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -160,6 +169,11 @@ impl syn::parse::Parse for GrainArgs {
                     let lit: LitStr = input.parse()?;
                     placement = Some(lit.value());
                 }
+                "storage" => {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitStr = input.parse()?;
+                    storage = Some(lit.value());
+                }
                 _ => {
                     return Err(syn::Error::new(
                         key.span(),
@@ -183,6 +197,7 @@ impl syn::parse::Parse for GrainArgs {
             grain_name,
             ask_timeout_secs,
             placement,
+            storage,
         })
     }
 }

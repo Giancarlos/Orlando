@@ -14,23 +14,39 @@ use crate::journaled_grain::{JournaledGrain, JournaledHandler};
 use crate::journaled_mailbox::{self, JournaledState};
 use crate::persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
 use crate::persistent_mailbox;
+use std::collections::HashMap;
+
 use crate::store::{PersistenceStrategy, StateStore};
 use crate::transaction::TransactionContext;
 use crate::versioned_grain::VersionedGrain;
 
 /// A silo that supports both regular and persistent grains.
+///
+/// Supports multiple named storage providers. Grains select their provider
+/// via `Grain::storage_provider()` (default: `"default"`).
 pub struct PersistentSilo {
     directory: Arc<GrainDirectory>,
-    store: Arc<dyn StateStore>,
+    stores: HashMap<String, Arc<dyn StateStore>>,
     filters: FilterChain,
 }
 
 impl PersistentSilo {
     pub fn builder() -> PersistentSiloBuilder {
         PersistentSiloBuilder {
-            store: None,
+            stores: HashMap::new(),
             filters: Vec::new(),
         }
+    }
+
+    /// Resolve the store for a grain type by its `storage_provider()` name.
+    /// Falls back to "default" if the named store doesn't exist.
+    fn store_for<G: Grain>(&self) -> Arc<dyn StateStore> {
+        let name = G::storage_provider();
+        self.stores
+            .get(name)
+            .or_else(|| self.stores.get("default"))
+            .cloned()
+            .expect("PersistentSilo has no store registered — call .store() on the builder")
     }
 
     fn make_context(&self) -> GrainContext {
@@ -80,7 +96,7 @@ impl PersistentSilo {
         };
 
         let activator: Arc<dyn GrainActivator> = self.directory.clone();
-        let store = self.store.clone();
+        let store = self.store_for::<G>();
 
         let activator_for_closure = activator.clone();
         let sender = activator.get_or_insert(
@@ -114,7 +130,7 @@ impl PersistentSilo {
         };
 
         let activator: Arc<dyn GrainActivator> = self.directory.clone();
-        let store = self.store.clone();
+        let store = self.store_for::<G>();
 
         let activator_for_closure = activator.clone();
         let strategy = PersistenceStrategy::default();
@@ -130,7 +146,7 @@ impl PersistentSilo {
             }),
         );
 
-        TransactionalGrainRef::new(sender, self.store.clone(), grain_id)
+        TransactionalGrainRef::new(sender, self.store_for::<G>(), grain_id)
     }
 
     /// Get a reference to a versioned grain using the default strategy (WriteOnDeactivate).
@@ -162,7 +178,7 @@ impl PersistentSilo {
         };
 
         let activator: Arc<dyn GrainActivator> = self.directory.clone();
-        let store = self.store.clone();
+        let store = self.store_for::<G>();
 
         let activator_for_closure = activator.clone();
         let sender = activator.get_or_insert(
@@ -222,8 +238,14 @@ impl PersistentSilo {
     }
 
     /// Access the underlying state store.
+    /// Access the default state store.
     pub fn store(&self) -> &Arc<dyn StateStore> {
-        &self.store
+        self.stores.get("default").expect("no default store registered")
+    }
+
+    /// Access a named state store.
+    pub fn named_store(&self, name: &str) -> Option<&Arc<dyn StateStore>> {
+        self.stores.get(name)
     }
 }
 
@@ -234,33 +256,48 @@ impl std::fmt::Debug for PersistentSilo {
 }
 
 pub struct PersistentSiloBuilder {
-    store: Option<Arc<dyn StateStore>>,
+    stores: HashMap<String, Arc<dyn StateStore>>,
     filters: Vec<Arc<dyn GrainCallFilter>>,
 }
 
 impl PersistentSiloBuilder {
-    pub fn store(mut self, store: impl StateStore) -> Self {
-        self.store = Some(Arc::new(store));
+    /// Register the default storage provider. Equivalent to `.named_store("default", store)`.
+    pub fn store(self, store: impl StateStore) -> Self {
+        self.named_store("default", store)
+    }
+
+    /// Register the default storage provider from an Arc.
+    pub fn store_arc(self, store: Arc<dyn StateStore>) -> Self {
+        self.named_store_arc("default", store)
+    }
+
+    /// Register a named storage provider. Grains select their provider
+    /// via `#[grain(storage = "name")]` or `Grain::storage_provider()`.
+    pub fn named_store(mut self, name: impl Into<String>, store: impl StateStore) -> Self {
+        self.stores.insert(name.into(), Arc::new(store));
         self
     }
 
-    pub fn store_arc(mut self, store: Arc<dyn StateStore>) -> Self {
-        self.store = Some(store);
+    /// Register a named storage provider from an Arc.
+    pub fn named_store_arc(mut self, name: impl Into<String>, store: Arc<dyn StateStore>) -> Self {
+        self.stores.insert(name.into(), store);
         self
     }
 
     /// Add a grain call filter (interceptor) to the silo.
-    /// Filters are called in order on every `ask()` call.
     pub fn filter(mut self, filter: Arc<dyn GrainCallFilter>) -> Self {
         self.filters.push(filter);
         self
     }
 
     pub fn build(self) -> PersistentSilo {
-        let store = self.store.expect("PersistentSilo requires a StateStore — call .store() on the builder");
+        assert!(
+            !self.stores.is_empty(),
+            "PersistentSilo requires at least one StateStore — call .store() or .named_store() on the builder"
+        );
         PersistentSilo {
             directory: Arc::new(GrainDirectory::new()),
-            store,
+            stores: self.stores,
             filters: FilterChain::new(self.filters),
         }
     }
