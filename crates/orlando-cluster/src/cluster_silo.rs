@@ -6,8 +6,10 @@ use arc_swap::ArcSwap;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{broadcast, mpsc, watch};
 
-use orlando_core::{Grain, GrainActivator, GrainHandler, GrainId, mailbox, reentrant_mailbox};
+use orlando_core::{ClusterId, Grain, GrainActivator, GrainHandler, GrainId, mailbox, reentrant_mailbox};
 use orlando_runtime::GrainDirectory;
+
+use crate::multi_cluster::{ClusterHealth, MultiClusterConfig};
 
 use crate::cluster_grain_ref::ClusterGrainRef;
 use crate::connection_pool::ConnectionPool;
@@ -40,6 +42,7 @@ pub struct ClusterSilo {
     tls_ca: Option<tonic::transport::Certificate>,
     auth: Option<Arc<dyn crate::auth::ClusterAuth>>,
     retry_policy: RetryPolicy,
+    multi_cluster: Option<MultiClusterConfig>,
 }
 
 impl ClusterSilo {
@@ -57,6 +60,11 @@ impl ClusterSilo {
 
     pub fn pool(&self) -> &Arc<ConnectionPool> {
         &self.pool
+    }
+
+    /// Get the cluster identity if multi-cluster is configured.
+    pub fn cluster_id(&self) -> Option<&ClusterId> {
+        self.multi_cluster.as_ref().map(|c| &c.cluster_id)
     }
 
     /// Signal the gRPC server and SWIM task to shut down.
@@ -318,6 +326,17 @@ impl ClusterSilo {
         );
         tokio::spawn(rebalancer.run());
 
+        // Spawn multi-cluster health checker if configured
+        if let Some(mc_config) = &self.multi_cluster {
+            let health = ClusterHealth::new(
+                mc_config.clone(),
+                self.pool.clone(),
+                self.shutdown_tx.subscribe(),
+            );
+            tokio::spawn(health.run());
+            tracing::info!(cluster_id = %mc_config.cluster_id, "multi-cluster health checker started");
+        }
+
         tracing::info!(%addr, "cluster silo listening");
 
         let mut shutdown_rx = self.shutdown_tx.subscribe();
@@ -360,6 +379,7 @@ pub struct ClusterSiloBuilder {
     auth: Option<Arc<dyn crate::auth::ClusterAuth>>,
     auth_token: Option<String>,
     retry_policy: RetryPolicy,
+    multi_cluster: Option<MultiClusterConfig>,
 }
 
 impl ClusterSiloBuilder {
@@ -377,6 +397,7 @@ impl ClusterSiloBuilder {
             auth: None,
             auth_token: None,
             retry_policy: RetryPolicy::default(),
+            multi_cluster: None,
         }
     }
 
@@ -439,6 +460,12 @@ impl ClusterSiloBuilder {
     /// with exponential backoff (100ms base, 2s cap).
     pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = policy;
+        self
+    }
+
+    /// Configure multi-cluster support with peer cluster endpoints.
+    pub fn multi_cluster(mut self, config: MultiClusterConfig) -> Self {
+        self.multi_cluster = Some(config);
         self
     }
 
@@ -515,6 +542,7 @@ impl ClusterSiloBuilder {
             tls_ca: self.tls_ca,
             auth: self.auth,
             retry_policy: self.retry_policy,
+            multi_cluster: self.multi_cluster,
         }
     }
 }
