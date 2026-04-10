@@ -1,7 +1,9 @@
 mod auth;
+mod cluster_gateway;
 mod cluster_grain_ref;
 mod cluster_silo;
 mod connection_pool;
+mod cross_cluster_directory;
 pub mod discovery;
 mod error;
 mod failure_detector;
@@ -21,10 +23,14 @@ pub mod proto {
 }
 
 pub use auth::{ClusterAuth, SharedSecretAuth};
+pub use cluster_gateway::ClusterGatewayService;
 pub use cluster_grain_ref::ClusterGrainRef;
 pub use cluster_silo::{ClusterSilo, ClusterSiloBuilder};
 pub use orlando_core::ClusterId;
 pub use connection_pool::ConnectionPool;
+pub use cross_cluster_directory::{
+    CrossClusterDirectory, DirectoryError, GrainOwnership, InMemoryCrossClusterDirectory,
+};
 pub use error::ClusterError;
 pub use failure_detector::{FailureDetector, FailureDetectorConfig, MembershipChange};
 pub use hash_ring::{HashRing, SiloAddress};

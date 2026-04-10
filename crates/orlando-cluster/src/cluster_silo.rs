@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -11,8 +12,10 @@ use orlando_runtime::GrainDirectory;
 
 use crate::multi_cluster::{ClusterHealth, MultiClusterConfig};
 
+use crate::cluster_gateway::ClusterGatewayService;
 use crate::cluster_grain_ref::ClusterGrainRef;
 use crate::connection_pool::ConnectionPool;
+use crate::cross_cluster_directory::CrossClusterDirectory;
 use crate::error::ClusterError;
 use crate::retry::RetryPolicy;
 use crate::failure_detector::{FailureDetector, FailureDetectorConfig, MembershipChange};
@@ -21,6 +24,7 @@ use crate::placement::{HashBasedPlacement, PlacementStrategy};
 use crate::membership::MembershipService;
 use crate::message_registry::MessageRegistry;
 use crate::network_message::NetworkMessage;
+use crate::proto::cluster_gateway_server::ClusterGatewayServer;
 use crate::proto::grain_transport_server::GrainTransportServer;
 use crate::proto::membership_server::MembershipServer;
 use crate::proto::{JoinRequest, NotifyJoinRequest, SiloAddress as ProtoSiloAddress};
@@ -43,6 +47,10 @@ pub struct ClusterSilo {
     auth: Option<Arc<dyn crate::auth::ClusterAuth>>,
     retry_policy: RetryPolicy,
     multi_cluster: Option<MultiClusterConfig>,
+    // Cross-cluster (GSI) fields -- None when multi-cluster is not configured
+    cross_cluster_dir: Option<Arc<dyn CrossClusterDirectory>>,
+    local_cluster_id: Option<ClusterId>,
+    peer_endpoints: Option<Arc<HashMap<ClusterId, String>>>,
 }
 
 impl ClusterSilo {
@@ -276,13 +284,13 @@ impl ClusterSilo {
         ))
     }
 
-    /// Start serving gRPC (grain transport + membership) and background tasks
-    /// (failure detector + rebalancer).
+    /// Start serving gRPC (grain transport + membership + optional gateway) and
+    /// background tasks (failure detector + rebalancer).
     pub async fn serve(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
         let addr: SocketAddr = format!("{}:{}", self.local_addr.host, self.local_addr.port)
             .parse()?;
 
-        let transport = GrainTransportService::new(
+        let mut transport = GrainTransportService::new(
             self.registry.clone(),
             self.directory.clone() as Arc<dyn GrainActivator>,
             self.ring.clone(),
@@ -290,6 +298,15 @@ impl ClusterSilo {
             self.local_addr.silo_id.clone(),
             self.auth.clone(),
         );
+
+        // Wire in cross-cluster forwarding if multi-cluster is configured
+        if let (Some(dir), Some(cid), Some(peers)) = (
+            &self.cross_cluster_dir,
+            &self.local_cluster_id,
+            &self.peer_endpoints,
+        ) {
+            transport = transport.with_cross_cluster(dir.clone(), cid.clone(), peers.clone());
+        }
 
         // Create failure detector using the shared SWIM state
         let detector = FailureDetector::with_state(
@@ -356,11 +373,26 @@ impl ClusterSilo {
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
         }
 
-        server_builder
-            .add_service(GrainTransportServer::new(transport))
-            .add_service(MembershipServer::new(membership))
-            .serve_with_shutdown(addr, shutdown_signal)
-            .await?;
+        // Add the optional ClusterGateway service for cross-cluster forwarding
+        if let Some(ref cluster_id) = self.local_cluster_id {
+            let gateway = ClusterGatewayService::new(
+                self.registry.clone(),
+                self.directory.clone() as Arc<dyn GrainActivator>,
+                cluster_id.to_string(),
+            );
+            server_builder
+                .add_service(GrainTransportServer::new(transport))
+                .add_service(MembershipServer::new(membership))
+                .add_service(ClusterGatewayServer::new(gateway))
+                .serve_with_shutdown(addr, shutdown_signal)
+                .await?;
+        } else {
+            server_builder
+                .add_service(GrainTransportServer::new(transport))
+                .add_service(MembershipServer::new(membership))
+                .serve_with_shutdown(addr, shutdown_signal)
+                .await?;
+        }
 
         Ok(())
     }
@@ -380,6 +412,9 @@ pub struct ClusterSiloBuilder {
     auth_token: Option<String>,
     retry_policy: RetryPolicy,
     multi_cluster: Option<MultiClusterConfig>,
+    cross_cluster_dir: Option<Arc<dyn CrossClusterDirectory>>,
+    local_cluster_id: Option<ClusterId>,
+    peer_endpoints: Option<HashMap<ClusterId, String>>,
 }
 
 impl ClusterSiloBuilder {
@@ -398,6 +433,9 @@ impl ClusterSiloBuilder {
             auth_token: None,
             retry_policy: RetryPolicy::default(),
             multi_cluster: None,
+            cross_cluster_dir: None,
+            local_cluster_id: None,
+            peer_endpoints: None,
         }
     }
 
@@ -466,6 +504,26 @@ impl ClusterSiloBuilder {
     /// Configure multi-cluster support with peer cluster endpoints.
     pub fn multi_cluster(mut self, config: MultiClusterConfig) -> Self {
         self.multi_cluster = Some(config);
+        self
+    }
+
+    /// Set the cross-cluster directory for GSI (Global Single Instance) support.
+    pub fn cross_cluster_directory(mut self, dir: Arc<dyn CrossClusterDirectory>) -> Self {
+        self.cross_cluster_dir = Some(dir);
+        self
+    }
+
+    /// Set the local cluster ID for multi-cluster deployments.
+    pub fn cluster_id(mut self, id: impl Into<ClusterId>) -> Self {
+        self.local_cluster_id = Some(id.into());
+        self
+    }
+
+    /// Add a peer cluster endpoint for cross-cluster forwarding.
+    pub fn peer_cluster(mut self, cluster_id: impl Into<ClusterId>, endpoint: impl Into<String>) -> Self {
+        self.peer_endpoints
+            .get_or_insert_with(HashMap::new)
+            .insert(cluster_id.into(), endpoint.into());
         self
     }
 
@@ -543,6 +601,9 @@ impl ClusterSiloBuilder {
             auth: self.auth,
             retry_policy: self.retry_policy,
             multi_cluster: self.multi_cluster,
+            cross_cluster_dir: self.cross_cluster_dir,
+            local_cluster_id: self.local_cluster_id,
+            peer_endpoints: self.peer_endpoints.map(Arc::new),
         }
     }
 }
