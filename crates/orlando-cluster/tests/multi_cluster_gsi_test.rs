@@ -191,6 +191,7 @@ async fn grain_call_from_non_owner_forwards_to_owning_cluster() {
                 payload,
                 encoding: 0,
                 request_context: std::collections::HashMap::new(),
+                message_version: 0,
             })
             .await
             .unwrap();
@@ -225,6 +226,7 @@ async fn grain_call_from_non_owner_forwards_to_owning_cluster() {
                 payload,
                 encoding: 0,
                 request_context: std::collections::HashMap::new(),
+                message_version: 0,
             })
             .await
             .unwrap();
@@ -325,6 +327,7 @@ async fn deregister_allows_new_owner() {
                 payload,
                 encoding: 0,
                 request_context: std::collections::HashMap::new(),
+                message_version: 0,
             })
             .await
             .unwrap();
@@ -371,6 +374,7 @@ async fn deregister_allows_new_owner() {
                 payload,
                 encoding: 0,
                 request_context: std::collections::HashMap::new(),
+                message_version: 0,
             })
             .await
             .unwrap();
