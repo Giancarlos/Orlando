@@ -6,6 +6,7 @@ mod failure_detector;
 mod hash_ring;
 mod membership;
 mod message_registry;
+mod multi_cluster;
 mod network_message;
 mod placement;
 mod rebalancer;
@@ -18,12 +19,14 @@ pub mod proto {
 
 pub use cluster_grain_ref::ClusterGrainRef;
 pub use cluster_silo::{ClusterSilo, ClusterSiloBuilder};
+pub use orlando_core::ClusterId;
 pub use connection_pool::ConnectionPool;
 pub use error::ClusterError;
 pub use failure_detector::{FailureDetector, FailureDetectorConfig, MembershipChange};
 pub use hash_ring::{HashRing, SiloAddress};
 pub use membership::MembershipService;
 pub use message_registry::MessageRegistry;
+pub use multi_cluster::{ClusterHealth, MultiClusterConfig, PeerStatus};
 pub use network_message::{Encoding, NetworkMessage};
 pub use placement::{HashBasedPlacement, PlacementStrategy, PreferLocalPlacement, RandomPlacement};
 pub use rebalancer::Rebalancer;

@@ -16,6 +16,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
+arc-swap = { workspace = true }
 fastrand = "2"
 
 [dev-dependencies]

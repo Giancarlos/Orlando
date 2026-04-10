@@ -4,8 +4,10 @@ use std::sync::{Arc, RwLock};
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{broadcast, mpsc, watch};
 
-use orlando_core::{Grain, GrainActivator, GrainHandler, GrainId, mailbox, reentrant_mailbox};
+use orlando_core::{ClusterId, Grain, GrainActivator, GrainHandler, GrainId, mailbox, reentrant_mailbox};
 use orlando_runtime::GrainDirectory;
+
+use crate::multi_cluster::{ClusterHealth, MultiClusterConfig};
 
 use crate::cluster_grain_ref::ClusterGrainRef;
 use crate::connection_pool::ConnectionPool;
@@ -33,6 +35,7 @@ pub struct ClusterSilo {
     shutdown_tx: watch::Sender<bool>,
     swim_state: Arc<tokio::sync::Mutex<crate::swim::SwimState>>,
     placement: Arc<dyn PlacementStrategy>,
+    multi_cluster: Option<MultiClusterConfig>,
 }
 
 impl ClusterSilo {
@@ -50,6 +53,11 @@ impl ClusterSilo {
 
     pub fn pool(&self) -> &Arc<ConnectionPool> {
         &self.pool
+    }
+
+    /// Get the cluster identity if multi-cluster is configured.
+    pub fn cluster_id(&self) -> Option<&ClusterId> {
+        self.multi_cluster.as_ref().map(|c| &c.cluster_id)
     }
 
     /// Signal the gRPC server and SWIM task to shut down.
@@ -260,6 +268,17 @@ impl ClusterSilo {
         );
         tokio::spawn(rebalancer.run());
 
+        // Spawn multi-cluster health checker if configured
+        if let Some(mc_config) = &self.multi_cluster {
+            let health = ClusterHealth::new(
+                mc_config.clone(),
+                self.pool.clone(),
+                self.shutdown_tx.subscribe(),
+            );
+            tokio::spawn(health.run());
+            tracing::info!(cluster_id = %mc_config.cluster_id, "multi-cluster health checker started");
+        }
+
         tracing::info!(%addr, "cluster silo listening");
 
         let mut shutdown_rx = self.shutdown_tx.subscribe();
@@ -285,6 +304,7 @@ pub struct ClusterSiloBuilder {
     virtual_nodes: u32,
     failure_detector_config: FailureDetectorConfig,
     placement: Option<Arc<dyn PlacementStrategy>>,
+    multi_cluster: Option<MultiClusterConfig>,
 }
 
 impl ClusterSiloBuilder {
@@ -297,6 +317,7 @@ impl ClusterSiloBuilder {
             virtual_nodes: 150,
             failure_detector_config: FailureDetectorConfig::default(),
             placement: None,
+            multi_cluster: None,
         }
     }
 
@@ -328,6 +349,12 @@ impl ClusterSiloBuilder {
     /// Set the grain placement strategy. Defaults to `HashBasedPlacement`.
     pub fn placement(mut self, strategy: Arc<dyn PlacementStrategy>) -> Self {
         self.placement = Some(strategy);
+        self
+    }
+
+    /// Configure multi-cluster support with peer cluster endpoints.
+    pub fn multi_cluster(mut self, config: MultiClusterConfig) -> Self {
+        self.multi_cluster = Some(config);
         self
     }
 
@@ -378,6 +405,7 @@ impl ClusterSiloBuilder {
             shutdown_tx,
             swim_state,
             placement,
+            multi_cluster: self.multi_cluster,
         }
     }
 }
