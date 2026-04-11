@@ -14,11 +14,18 @@ use crate::journaled_grain::{JournaledGrain, JournaledHandler};
 use crate::journaled_mailbox::{self, JournaledState};
 use crate::persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
 use crate::persistent_mailbox;
+use crate::serializer::SerializerFormat;
 use std::collections::HashMap;
 
 use crate::store::{PersistenceStrategy, StateStore};
 use crate::transaction::TransactionContext;
 use crate::versioned_grain::VersionedGrain;
+
+/// A named store entry pairing a backend with its serializer.
+struct StoreEntry {
+    store: Arc<dyn StateStore>,
+    serializer: SerializerFormat,
+}
 
 /// A silo that supports both regular and persistent grains.
 ///
@@ -26,7 +33,7 @@ use crate::versioned_grain::VersionedGrain;
 /// via `Grain::storage_provider()` (default: `"default"`).
 pub struct PersistentSilo {
     directory: Arc<GrainDirectory>,
-    stores: HashMap<String, Arc<dyn StateStore>>,
+    stores: HashMap<String, StoreEntry>,
     filters: FilterChain,
 }
 
@@ -38,14 +45,13 @@ impl PersistentSilo {
         }
     }
 
-    /// Resolve the store for a grain type by its `storage_provider()` name.
+    /// Resolve the store entry for a grain type by its `storage_provider()` name.
     /// Falls back to "default" if the named store doesn't exist.
-    fn store_for<G: Grain>(&self) -> Arc<dyn StateStore> {
+    fn entry_for<G: Grain>(&self) -> &StoreEntry {
         let name = G::storage_provider();
         self.stores
             .get(name)
             .or_else(|| self.stores.get("default"))
-            .cloned()
             .expect("PersistentSilo has no store registered — call .store() on the builder")
     }
 
@@ -96,7 +102,9 @@ impl PersistentSilo {
         };
 
         let activator: Arc<dyn GrainActivator> = self.directory.clone();
-        let store = self.store_for::<G>();
+        let entry = self.entry_for::<G>();
+        let store = entry.store.clone();
+        let serializer = entry.serializer.clone();
 
         let activator_for_closure = activator.clone();
         let sender = activator.get_or_insert(
@@ -104,8 +112,10 @@ impl PersistentSilo {
             Box::new(move |id, cancellation| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
-                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store, strategy, cancellation)
-                        .await;
+                    persistent_mailbox::run::<G>(
+                        id, rx, activator_for_closure, store, strategy, cancellation, serializer,
+                    )
+                    .await;
                 });
                 (tx, task)
             }),
@@ -130,23 +140,28 @@ impl PersistentSilo {
         };
 
         let activator: Arc<dyn GrainActivator> = self.directory.clone();
-        let store = self.store_for::<G>();
+        let entry = self.entry_for::<G>();
+        let store = entry.store.clone();
+        let serializer = entry.serializer.clone();
 
         let activator_for_closure = activator.clone();
         let strategy = PersistenceStrategy::default();
+        let store_for_ref = store.clone();
         let sender = activator.get_or_insert(
             grain_id.clone(),
             Box::new(move |id, cancellation| {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
-                    persistent_mailbox::run::<G>(id, rx, activator_for_closure, store, strategy, cancellation)
-                        .await;
+                    persistent_mailbox::run::<G>(
+                        id, rx, activator_for_closure, store, strategy, cancellation, serializer,
+                    )
+                    .await;
                 });
                 (tx, task)
             }),
         );
 
-        TransactionalGrainRef::new(sender, self.store_for::<G>(), grain_id)
+        TransactionalGrainRef::new(sender, store_for_ref, grain_id)
     }
 
     /// Get a reference to a versioned grain using the default strategy (WriteOnDeactivate).
@@ -178,7 +193,9 @@ impl PersistentSilo {
         };
 
         let activator: Arc<dyn GrainActivator> = self.directory.clone();
-        let store = self.store_for::<G>();
+        let entry = self.entry_for::<G>();
+        let store = entry.store.clone();
+        let serializer = entry.serializer.clone();
 
         let activator_for_closure = activator.clone();
         let sender = activator.get_or_insert(
@@ -187,7 +204,7 @@ impl PersistentSilo {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
                     persistent_mailbox::run_versioned::<G>(
-                        id, rx, activator_for_closure, store, strategy, cancellation,
+                        id, rx, activator_for_closure, store, strategy, cancellation, serializer,
                     )
                     .await;
                 });
@@ -237,15 +254,14 @@ impl PersistentSilo {
         JournaledGrainRef::new(sender, journal, grain_id)
     }
 
-    /// Access the underlying state store.
     /// Access the default state store.
     pub fn store(&self) -> &Arc<dyn StateStore> {
-        self.stores.get("default").expect("no default store registered")
+        &self.stores.get("default").expect("no default store registered").store
     }
 
     /// Access a named state store.
     pub fn named_store(&self, name: &str) -> Option<&Arc<dyn StateStore>> {
-        self.stores.get(name)
+        self.stores.get(name).map(|e| &e.store)
     }
 }
 
@@ -256,7 +272,7 @@ impl std::fmt::Debug for PersistentSilo {
 }
 
 pub struct PersistentSiloBuilder {
-    stores: HashMap<String, Arc<dyn StateStore>>,
+    stores: HashMap<String, StoreEntry>,
     filters: Vec<Arc<dyn GrainCallFilter>>,
 }
 
@@ -274,13 +290,59 @@ impl PersistentSiloBuilder {
     /// Register a named storage provider. Grains select their provider
     /// via `#[grain(storage = "name")]` or `Grain::storage_provider()`.
     pub fn named_store(mut self, name: impl Into<String>, store: impl StateStore) -> Self {
-        self.stores.insert(name.into(), Arc::new(store));
+        self.stores.insert(
+            name.into(),
+            StoreEntry {
+                store: Arc::new(store),
+                serializer: SerializerFormat::default(),
+            },
+        );
         self
     }
 
     /// Register a named storage provider from an Arc.
     pub fn named_store_arc(mut self, name: impl Into<String>, store: Arc<dyn StateStore>) -> Self {
-        self.stores.insert(name.into(), store);
+        self.stores.insert(
+            name.into(),
+            StoreEntry {
+                store,
+                serializer: SerializerFormat::default(),
+            },
+        );
+        self
+    }
+
+    /// Register a named storage provider with a custom serializer.
+    ///
+    /// Use this when a store needs a different format, e.g. JSON for Postgres
+    /// (queryable with `jsonb`) or bincode for Redis (compact).
+    pub fn named_store_with_serializer(
+        mut self,
+        name: impl Into<String>,
+        store: impl StateStore,
+        serializer: SerializerFormat,
+    ) -> Self {
+        self.stores.insert(
+            name.into(),
+            StoreEntry {
+                store: Arc::new(store),
+                serializer,
+            },
+        );
+        self
+    }
+
+    /// Register a named storage provider from an Arc with a custom serializer.
+    pub fn named_store_arc_with_serializer(
+        mut self,
+        name: impl Into<String>,
+        store: Arc<dyn StateStore>,
+        serializer: SerializerFormat,
+    ) -> Self {
+        self.stores.insert(
+            name.into(),
+            StoreEntry { store, serializer },
+        );
         self
     }
 

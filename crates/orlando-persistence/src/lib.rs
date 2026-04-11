@@ -8,6 +8,7 @@ mod multi_transaction;
 mod persistent_grain;
 pub(crate) mod persistent_mailbox;
 mod persistent_silo;
+mod serializer;
 mod sqlite_store;
 mod store;
 
@@ -29,6 +30,7 @@ pub use persistent_silo::{
 pub use sqlite_store::SqliteStateStore;
 #[cfg(feature = "postgres")]
 pub use postgres_store::PostgresStateStore;
+pub use serializer::SerializerFormat;
 pub use store::{ETag, PersistenceError, PersistenceStrategy, StateStore};
 pub use transaction::TransactionContext;
 pub use versioned_grain::{VersionedGrain, migrate_state};

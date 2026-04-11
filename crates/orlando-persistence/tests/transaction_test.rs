@@ -61,6 +61,15 @@ impl Message for GetCount {
     type Result = i64;
 }
 
+/// Message that modifies state in memory, then reads persisted state via read_state.
+/// Returns (in_memory_count, persisted_count_or_minus_one).
+struct MutateAndReadBack {
+    amount: i64,
+}
+impl Message for MutateAndReadBack {
+    type Result = (i64, i64);
+}
+
 // Message that calls save_state with a store that will fail
 struct SaveAndFail;
 impl Message for SaveAndFail {
@@ -97,6 +106,25 @@ impl StateStore for FailingSaveStore {
 
     async fn delete(&self, grain_id: &GrainId) -> Result<(), PersistenceError> {
         self.inner.delete(grain_id).await
+    }
+
+    async fn load_with_etag(
+        &self,
+        grain_id: &GrainId,
+    ) -> Result<Option<(Vec<u8>, orlando_persistence::ETag)>, PersistenceError> {
+        self.inner.load_with_etag(grain_id).await
+    }
+
+    async fn save_with_etag(
+        &self,
+        _grain_id: &GrainId,
+        _data: &[u8],
+        _expected_etag: Option<&orlando_persistence::ETag>,
+    ) -> Result<orlando_persistence::ETag, PersistenceError> {
+        Err(PersistenceError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated store failure",
+        )))
     }
 }
 
@@ -159,6 +187,29 @@ impl TransactionalHandler<SaveAndFail> for TxCounter {
         // save_state will fail because the store returns an error
         tx.save_state(state).await?;
         Ok(state.count)
+    }
+}
+
+// Transactional handler that mutates in-memory state, then reads persisted state back
+#[async_trait]
+impl TransactionalHandler<MutateAndReadBack> for TxCounter {
+    async fn handle(
+        state: &mut CounterState,
+        msg: MutateAndReadBack,
+        _ctx: &GrainContext,
+        tx: &TransactionContext,
+    ) -> Result<(i64, i64), PersistenceError> {
+        // Mutate in-memory only (no save)
+        state.count += msg.amount;
+        let in_memory = state.count;
+
+        // Read persisted state — should reflect what was last saved, not in-memory
+        let persisted: i64 = match tx.read_state::<CounterState>().await? {
+            Some(s) => s.count,
+            None => -1,
+        };
+
+        Ok((in_memory, persisted))
     }
 }
 
@@ -310,4 +361,43 @@ async fn multiple_rollbacks_dont_corrupt_state() {
     // State should still be 10 after all rollbacks
     let count = counter.ask(Increment { amount: 0 }).await.unwrap();
     assert_eq!(count, 10, "state should remain 10 after three rollbacks");
+}
+
+#[tokio::test]
+async fn read_state_returns_persisted_not_in_memory() {
+    let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
+    let silo = PersistentSilo::builder().store_arc(store.clone()).build();
+
+    let counter = silo.transactional_get_ref::<TxCounter>("tx-read");
+
+    // Save count=10 to the store via save_state mid-handler
+    let count = counter
+        .ask(SaveAndIncrement { amount: 10 })
+        .await
+        .unwrap();
+    assert_eq!(count, 10);
+
+    // Now mutate in-memory to 111 and read persisted — should still be 10
+    let (in_memory, persisted) = counter
+        .ask(MutateAndReadBack { amount: 101 })
+        .await
+        .unwrap();
+    assert_eq!(in_memory, 111, "in-memory should be 10 + 101 = 111");
+    assert_eq!(persisted, 10, "persisted should still be 10 (last save_state)");
+}
+
+#[tokio::test]
+async fn read_state_returns_none_when_no_persisted_state() {
+    let store: Arc<dyn StateStore> = Arc::new(InMemoryStateStore::new());
+    let silo = PersistentSilo::builder().store_arc(store.clone()).build();
+
+    let counter = silo.transactional_get_ref::<TxCounter>("tx-read-none");
+
+    // MutateAndReadBack without ever saving — read_state should return None (-1)
+    let (in_memory, persisted) = counter
+        .ask(MutateAndReadBack { amount: 42 })
+        .await
+        .unwrap();
+    assert_eq!(in_memory, 42, "in-memory should be 42");
+    assert_eq!(persisted, -1, "persisted should be -1 (None)");
 }
