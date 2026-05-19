@@ -49,6 +49,17 @@ pub trait Grain: Send + 'static {
         "default"
     }
 
+    /// Clusters where this grain type may be activated (data residency).
+    ///
+    /// Returns `None` for no restriction (activate in any cluster).
+    /// Returns `Some(&["eu-west"])` to pin activations to the EU cluster only.
+    /// The cross-cluster directory and transport enforce this constraint:
+    /// if the local cluster is not in the allowed list, the request is
+    /// forwarded to an allowed cluster instead of activating locally.
+    fn allowed_clusters() -> Option<&'static [&'static str]> {
+        None
+    }
+
     /// Whether this grain uses the reentrant mailbox for concurrent message dispatch.
     ///
     /// When true, messages are dequeued into concurrent tasks instead of being

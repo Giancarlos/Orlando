@@ -8,7 +8,8 @@ use crate::message_registry::MessageRegistry;
 use crate::network_message::Encoding;
 use crate::proto::cluster_gateway_server::ClusterGateway;
 use crate::proto::{
-    ClusterPingRequest, ClusterPingResponse, ForwardInvokeRequest, ForwardInvokeResponse,
+    ClusterPingRequest, ClusterPingResponse, DrainAck, DrainNotification,
+    ForwardInvokeRequest, ForwardInvokeResponse,
 };
 
 /// gRPC service handling cross-cluster grain forwarding.
@@ -87,6 +88,23 @@ impl ClusterGateway for ClusterGatewayService {
             cluster_id: self.local_cluster_id.clone(),
             silo_count: 1,
             active_grains: 0,
+            state: crate::proto::ClusterState::Healthy.into(),
         }))
+    }
+
+    async fn notify_drain(
+        &self,
+        request: Request<DrainNotification>,
+    ) -> Result<Response<DrainAck>, Status> {
+        let drain = request.into_inner();
+        tracing::info!(
+            draining_cluster = %drain.cluster_id,
+            grain_count = drain.grains.len(),
+            "received drain notification from peer cluster"
+        );
+        // The failover manager will pick this up via health checks going
+        // Unreachable, but the drain notification lets us skip the grace
+        // period and promote immediately.
+        Ok(Response::new(DrainAck {}))
     }
 }

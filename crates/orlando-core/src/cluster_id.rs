@@ -1,7 +1,9 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Identifies a cluster within a multi-cluster (GSI) deployment.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClusterId(pub String);
 
 impl ClusterId {

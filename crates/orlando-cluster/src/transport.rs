@@ -181,8 +181,35 @@ impl GrainTransportService {
                 Ok(None)
             }
             Ok(None) => {
-                // Not registered anywhere. Register ourselves as the owner.
-                let _ = dir.register(&grain_id, local_cid).await;
+                // Check data residency constraints before claiming ownership
+                if let Some(allowed) = self.registry.allowed_clusters(&req.grain_type) {
+                    if !allowed.contains(&local_cid.as_str()) {
+                        // This cluster is not allowed to host this grain.
+                        // Forward to the first allowed cluster we know about.
+                        for cluster_name in allowed {
+                            let target_id = ClusterId::new(*cluster_name);
+                            if let Some(endpoint) = peers.get(&target_id) {
+                                tracing::debug!(
+                                    grain_type = %req.grain_type,
+                                    grain_key = %req.grain_key,
+                                    target_cluster = %target_id,
+                                    "data residency: forwarding to allowed cluster"
+                                );
+                                let response =
+                                    self.forward_to_cluster(endpoint, req, local_cid).await?;
+                                return Ok(Some(response));
+                            }
+                        }
+                        // No reachable allowed cluster — reject
+                        return Err(Status::failed_precondition(format!(
+                            "grain type {} is restricted to clusters {:?} but none are reachable",
+                            req.grain_type, allowed
+                        )));
+                    }
+                }
+
+                // Not registered anywhere and we're allowed. Register as owner.
+                let _ = dir.register(&grain_id, local_cid, 1).await;
                 Ok(None)
             }
             Err(e) => {

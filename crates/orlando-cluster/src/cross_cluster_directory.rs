@@ -7,32 +7,44 @@ use orlando_core::{ClusterId, GrainId};
 
 /// Tracks which cluster owns each grain activation globally.
 /// Implementations must provide CAS semantics: only one cluster can own
-/// a grain at a time.
+/// a grain at a time. Concurrent registrations are resolved by first-writer-wins.
 #[async_trait]
 pub trait CrossClusterDirectory: Send + Sync + 'static {
     /// Look up which cluster owns a grain.
     async fn lookup(&self, grain_id: &GrainId) -> Result<Option<GrainOwnership>, DirectoryError>;
 
-    /// Register ownership. Returns the actual owner -- if another cluster
-    /// already registered, returns their ownership (first-writer-wins CAS).
+    /// CAS register. Returns actual owner (may differ from requested if another
+    /// cluster won the race). The epoch is a monotonic fencing token — stale
+    /// registrations with a lower epoch are rejected.
     async fn register(
         &self,
         grain_id: &GrainId,
         cluster_id: &ClusterId,
+        epoch: u64,
     ) -> Result<GrainOwnership, DirectoryError>;
 
-    /// Release ownership.
+    /// Release ownership. Only the owning cluster can deregister.
     async fn deregister(
         &self,
         grain_id: &GrainId,
         cluster_id: &ClusterId,
     ) -> Result<(), DirectoryError>;
+
+    /// Extend TTL for ownership. No-op for backends without TTL (e.g., PostgreSQL).
+    async fn renew(
+        &self,
+        _grain_id: &GrainId,
+        _cluster_id: &ClusterId,
+    ) -> Result<(), DirectoryError> {
+        Ok(())
+    }
 }
 
 /// Who owns a grain activation.
 #[derive(Debug, Clone)]
 pub struct GrainOwnership {
     pub cluster_id: ClusterId,
+    pub epoch: u64,
     pub registered_at: SystemTime,
 }
 
@@ -41,6 +53,8 @@ pub struct GrainOwnership {
 pub enum DirectoryError {
     #[error("directory backend unavailable: {0}")]
     Unavailable(String),
+    #[error("stale epoch: current is {current}, requested {requested}")]
+    StaleEpoch { current: u64, requested: u64 },
     #[error("directory backend error: {0}")]
     Backend(String),
 }
@@ -75,6 +89,7 @@ impl CrossClusterDirectory for InMemoryCrossClusterDirectory {
         &self,
         grain_id: &GrainId,
         cluster_id: &ClusterId,
+        epoch: u64,
     ) -> Result<GrainOwnership, DirectoryError> {
         let mut entries = self
             .entries
@@ -82,13 +97,22 @@ impl CrossClusterDirectory for InMemoryCrossClusterDirectory {
             .map_err(|e| DirectoryError::Backend(e.to_string()))?;
         let key = Self::key(grain_id);
 
-        // CAS: first writer wins
+        // CAS: first writer wins, but higher epoch can reclaim
         if let Some(existing) = entries.get(&key) {
-            return Ok(existing.clone());
+            if existing.cluster_id != *cluster_id && epoch <= existing.epoch {
+                // Another cluster owns it at a higher or equal epoch
+                return Ok(existing.clone());
+            }
+            if existing.cluster_id == *cluster_id && epoch <= existing.epoch {
+                // We already own it at this or higher epoch
+                return Ok(existing.clone());
+            }
+            // Higher epoch — allow re-registration (failover promotion)
         }
 
         let ownership = GrainOwnership {
             cluster_id: cluster_id.clone(),
+            epoch,
             registered_at: SystemTime::now(),
         };
         entries.insert(key, ownership.clone());

@@ -31,6 +31,9 @@ pub struct MessageRegistry {
     grain_rust_types: HashMap<String, &'static str>,
     /// Maps message_type_name -> highest supported version for that message type.
     message_versions: HashMap<String, u32>,
+    /// Data residency constraints: grain_type_name -> allowed cluster IDs.
+    /// If the slice is empty, the grain can be activated in any cluster.
+    allowed_clusters: HashMap<String, &'static [&'static str]>,
 }
 
 impl Default for MessageRegistry {
@@ -47,12 +50,20 @@ impl MessageRegistry {
             message_types: HashMap::new(),
             grain_rust_types: HashMap::new(),
             message_versions: HashMap::new(),
+            allowed_clusters: HashMap::new(),
         }
     }
 
     /// Look up the `&'static str` for a registered grain type name.
     pub fn grain_type_str(&self, grain_type: &str) -> Option<&'static str> {
         self.grain_types.get(grain_type).copied()
+    }
+
+    /// Get data residency constraints for a grain type.
+    /// Returns `None` if the grain has no restrictions (activate anywhere).
+    /// Returns `Some(clusters)` if the grain is pinned to specific clusters.
+    pub fn allowed_clusters(&self, grain_type: &str) -> Option<&'static [&'static str]> {
+        self.allowed_clusters.get(grain_type).copied()
     }
 
     /// Register a grain + message combination for remote dispatch.
@@ -88,6 +99,12 @@ impl MessageRegistry {
             .insert(message_type.to_string(), message_type);
         self.message_versions
             .insert(message_type.to_string(), M::message_version());
+
+        // Record data residency constraints if present
+        if let Some(clusters) = G::allowed_clusters() {
+            self.allowed_clusters
+                .insert(grain_type.to_string(), clusters);
+        }
 
         let dispatch: DispatchFn = Arc::new(
             move |key: String,

@@ -1,18 +1,24 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use orlando_core::{Envelope, Grain, GrainError, GrainHandler, GrainRef, RequestContext};
+use orlando_core::{Envelope, Grain, GrainError, GrainHandler, GrainRef, ReadOnlyMessage, RequestContext};
 
 use crate::connection_pool::ConnectionPool;
 use crate::network_message::NetworkMessage;
 use crate::proto::InvokeRequest;
 use crate::retry::RetryPolicy;
+use crate::store_wrapper::ReplicaStore;
 
 pub struct ClusterGrainRef<G: Grain> {
     inner: RefInner,
     retry_policy: RetryPolicy,
+    /// Optional replica store for serving stale reads on secondaries.
+    replica_store: Option<Arc<ReplicaStore>>,
+    /// Max staleness for read-only messages (0 = always forward).
+    max_staleness: Duration,
     _marker: PhantomData<G>,
 }
 
@@ -50,6 +56,8 @@ impl<G: Grain> Clone for ClusterGrainRef<G> {
         Self {
             inner: self.inner.clone(),
             retry_policy: self.retry_policy.clone(),
+            replica_store: self.replica_store.clone(),
+            max_staleness: self.max_staleness,
             _marker: PhantomData,
         }
     }
@@ -60,6 +68,8 @@ impl<G: Grain> ClusterGrainRef<G> {
         Self {
             inner: RefInner::Local(sender),
             retry_policy: RetryPolicy::default(),
+            replica_store: None,
+            max_staleness: Duration::ZERO,
             _marker: PhantomData,
         }
     }
@@ -78,6 +88,8 @@ impl<G: Grain> ClusterGrainRef<G> {
                 pool,
             },
             retry_policy: RetryPolicy::default(),
+            replica_store: None,
+            max_staleness: Duration::ZERO,
             _marker: PhantomData,
         }
     }
@@ -85,6 +97,14 @@ impl<G: Grain> ClusterGrainRef<G> {
     /// Override the retry policy for remote calls on this grain reference.
     pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = policy;
+        self
+    }
+
+    /// Attach a replica store for serving read-only messages from local state
+    /// on secondary clusters.
+    pub fn with_replica_store(mut self, store: Arc<ReplicaStore>, max_staleness: Duration) -> Self {
+        self.replica_store = Some(store);
+        self.max_staleness = max_staleness;
         self
     }
 
@@ -157,6 +177,65 @@ impl<G: Grain> ClusterGrainRef<G> {
                 )))
             }
         }
+    }
+
+    /// Send a read-only message. If a fresh-enough replica exists locally,
+    /// the result is deserialized from the replica store without a network hop.
+    /// Otherwise falls back to `ask()` (forwarding to the primary).
+    ///
+    /// Only usable with messages that implement `ReadOnlyMessage`.
+    pub async fn read_only_ask<M>(&self, msg: M) -> Result<M::Result, GrainError>
+    where
+        M: NetworkMessage + ReadOnlyMessage,
+        G: GrainHandler<M>,
+        M::Result: Serialize + DeserializeOwned,
+    {
+        // Try the replica store first (only for remote refs with a store attached)
+        if let (
+            Some(store),
+            RefInner::Remote {
+                grain_type,
+                grain_key,
+                ..
+            },
+        ) = (&self.replica_store, &self.inner)
+        {
+            let staleness_millis = self.max_staleness.as_millis() as i64;
+            if staleness_millis > 0 && store.is_fresh(grain_type, grain_key, staleness_millis) {
+                if let Some(entry) = store.get(grain_type, grain_key) {
+                    // Deserialize the full grain state — but we actually need the
+                    // message result, not the grain state. For read-only messages
+                    // served from replicas, we need a convention: the replica payload
+                    // IS the serialized grain state. The caller can only use this
+                    // path for messages whose Result can be derived from state.
+                    //
+                    // For now, we expose the raw replica payload as M::Result. This
+                    // works when M::Result IS the grain state (e.g., GetState -> State).
+                    // For messages that compute a derived value, fall through to ask().
+                    match bincode::serde::decode_from_slice::<M::Result, _>(
+                        &entry.payload,
+                        bincode::config::standard(),
+                    ) {
+                        Ok((result, _)) => {
+                            tracing::debug!(
+                                grain_type,
+                                grain_key = grain_key.as_str(),
+                                sequence = entry.sequence,
+                                "served read-only message from local replica"
+                            );
+                            return Ok(result);
+                        }
+                        Err(_) => {
+                            // Deserialization failed — state format doesn't match
+                            // M::Result. Fall through to primary.
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fall back to standard ask (forwards to primary)
+        self.ask(msg).await
     }
 
     /// Execute a single remote invoke attempt with pre-serialized payload bytes.

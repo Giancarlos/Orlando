@@ -10,6 +10,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use orlando_core::{ClusterId, Grain, GrainActivator, GrainHandler, GrainId, mailbox, reentrant_mailbox};
 use orlando_runtime::GrainDirectory;
 
+use crate::failover::{FailoverConfig, FailoverManager};
 use crate::multi_cluster::{ClusterHealth, MultiClusterConfig};
 
 use crate::cluster_gateway::ClusterGatewayService;
@@ -51,6 +52,11 @@ pub struct ClusterSilo {
     cross_cluster_dir: Option<Arc<dyn CrossClusterDirectory>>,
     local_cluster_id: Option<ClusterId>,
     peer_endpoints: Option<Arc<HashMap<ClusterId, String>>>,
+    failover_config: FailoverConfig,
+    #[cfg(feature = "tcp-transport")]
+    tcp_port: Option<u16>,
+    #[cfg(feature = "tcp-transport")]
+    tcp_pool: Arc<crate::tcp_transport::TcpConnectionPool>,
 }
 
 impl ClusterSilo {
@@ -77,6 +83,12 @@ impl ClusterSilo {
 
     /// Signal the gRPC server and SWIM task to shut down.
     /// Does NOT drain active grains — use `shutdown_and_drain()` for graceful shutdown.
+    /// Get the TCP connection pool (only available with `tcp-transport` feature).
+    #[cfg(feature = "tcp-transport")]
+    pub fn tcp_pool(&self) -> &Arc<crate::tcp_transport::TcpConnectionPool> {
+        &self.tcp_pool
+    }
+
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
     }
@@ -343,15 +355,34 @@ impl ClusterSilo {
         );
         tokio::spawn(rebalancer.run());
 
-        // Spawn multi-cluster health checker if configured
+        // Spawn multi-cluster health checker + failover manager if configured
         if let Some(mc_config) = &self.multi_cluster {
-            let health = ClusterHealth::new(
+            let health = Arc::new(ClusterHealth::new(
+                mc_config.clone(),
+                self.pool.clone(),
+                self.shutdown_tx.subscribe(),
+            ));
+            // The health checker needs to be cloned before being moved into spawn
+            let health_runner = ClusterHealth::new(
                 mc_config.clone(),
                 self.pool.clone(),
                 self.shutdown_tx.subscribe(),
             );
-            tokio::spawn(health.run());
+            tokio::spawn(health_runner.run());
             tracing::info!(cluster_id = %mc_config.cluster_id, "multi-cluster health checker started");
+
+            // Spawn failover manager if we have a cross-cluster directory
+            if let (Some(dir), Some(cid)) = (&self.cross_cluster_dir, &self.local_cluster_id) {
+                let failover = FailoverManager::new(
+                    cid.clone(),
+                    self.failover_config.clone(),
+                    health,
+                    dir.clone(),
+                    self.shutdown_tx.subscribe(),
+                );
+                tokio::spawn(failover.run());
+                tracing::info!("failover manager started");
+            }
         }
 
         tracing::info!(%addr, "cluster silo listening");
@@ -415,6 +446,7 @@ pub struct ClusterSiloBuilder {
     cross_cluster_dir: Option<Arc<dyn CrossClusterDirectory>>,
     local_cluster_id: Option<ClusterId>,
     peer_endpoints: Option<HashMap<ClusterId, String>>,
+    failover_config: FailoverConfig,
 }
 
 impl ClusterSiloBuilder {
@@ -436,6 +468,7 @@ impl ClusterSiloBuilder {
             cross_cluster_dir: None,
             local_cluster_id: None,
             peer_endpoints: None,
+            failover_config: FailoverConfig::default(),
         }
     }
 
@@ -527,6 +560,13 @@ impl ClusterSiloBuilder {
         self
     }
 
+    /// Configure failover behavior (grace period, check interval).
+    /// Only relevant when multi-cluster is enabled.
+    pub fn failover_config(mut self, config: FailoverConfig) -> Self {
+        self.failover_config = config;
+        self
+    }
+
     /// Register a grain + message type for remote dispatch on this silo.
     pub fn register<G, M>(mut self) -> Self
     where
@@ -604,6 +644,11 @@ impl ClusterSiloBuilder {
             cross_cluster_dir: self.cross_cluster_dir,
             local_cluster_id: self.local_cluster_id,
             peer_endpoints: self.peer_endpoints.map(Arc::new),
+            failover_config: self.failover_config,
+            #[cfg(feature = "tcp-transport")]
+            tcp_port: None,
+            #[cfg(feature = "tcp-transport")]
+            tcp_pool: Arc::new(crate::tcp_transport::TcpConnectionPool::new()),
         }
     }
 }

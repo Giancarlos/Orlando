@@ -120,10 +120,16 @@ message LookupGrainResponse {
   string endpoint = 3;
 }
 
-// Cross-cluster grain forwarding (GSI).
+// Cross-cluster grain forwarding (GSI) and lifecycle management.
 service ClusterGateway {
     rpc ForwardInvoke(ForwardInvokeRequest) returns (ForwardInvokeResponse);
     rpc ClusterPing(ClusterPingRequest) returns (ClusterPingResponse);
+    rpc NotifyDrain(DrainNotification) returns (DrainAck);
+}
+
+// Replication stream from primary to secondary clusters.
+service ReplicationService {
+    rpc Subscribe(ReplicationSubscribeRequest) returns (stream ReplicationEntryProto);
 }
 
 message ForwardInvokeRequest {
@@ -151,4 +157,45 @@ message ClusterPingResponse {
     string cluster_id = 1;
     uint32 silo_count = 2;
     uint32 active_grains = 3;
+    ClusterState state = 4;
+}
+
+enum ClusterState {
+    HEALTHY = 0;
+    DRAINING = 1;
+    JOINING = 2;
+}
+
+// Graceful shutdown notification sent to peer clusters so they can
+// begin promotion without waiting for the health-check grace period.
+message DrainNotification {
+    string cluster_id = 1;
+    repeated GrainOwnershipEntry grains = 2;
+}
+
+message DrainAck {}
+
+message GrainOwnershipEntry {
+    string grain_type = 1;
+    string grain_key = 2;
+    uint64 epoch = 3;
+    uint64 latest_sequence = 4;
+}
+
+// Replication protocol messages.
+message ReplicationSubscribeRequest {
+    string grain_type = 1;
+    string grain_key = 2;
+    uint64 after_sequence = 3;
+    string subscriber_cluster = 4;
+}
+
+message ReplicationEntryProto {
+    string grain_type = 1;
+    string grain_key = 2;
+    uint64 sequence = 3;
+    int64 timestamp_millis = 4;
+    string source_cluster = 5;
+    int32 entry_type = 6;
+    bytes payload = 7;
 }
