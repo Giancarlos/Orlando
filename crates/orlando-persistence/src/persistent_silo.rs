@@ -12,7 +12,8 @@ use orlando_runtime::GrainDirectory;
 use crate::journal_store::JournalStore;
 use crate::journaled_grain::{JournaledGrain, JournaledHandler};
 use crate::journaled_mailbox::{self, JournaledState};
-use crate::persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
+use crate::facet::{FacetContext, FacetDescriptor, ResolvedFacet};
+use crate::persistent_grain::{FacetedHandler, PersistentGrain, TransactionalGrain, TransactionalHandler};
 use crate::persistent_mailbox;
 use crate::serializer::SerializerFormat;
 use std::collections::HashMap;
@@ -113,7 +114,7 @@ impl PersistentSilo {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
                     persistent_mailbox::run::<G>(
-                        id, rx, activator_for_closure, store, strategy, cancellation, serializer,
+                        id, rx, activator_for_closure, store, strategy, cancellation, serializer, None,
                     )
                     .await;
                 });
@@ -153,7 +154,7 @@ impl PersistentSilo {
                 let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
                 let task = tokio::spawn(async move {
                     persistent_mailbox::run::<G>(
-                        id, rx, activator_for_closure, store, strategy, cancellation, serializer,
+                        id, rx, activator_for_closure, store, strategy, cancellation, serializer, None,
                     )
                     .await;
                 });
@@ -252,6 +253,74 @@ impl PersistentSilo {
         );
 
         JournaledGrainRef::new(sender, journal, grain_id)
+    }
+
+    /// Get a reference to a persistent grain with named state facets.
+    ///
+    /// Each facet is an independently-persisted state object. Facets are loaded
+    /// from their respective stores on activation and available in the handler
+    /// via `FacetContext`.
+    ///
+    /// ```ignore
+    /// let grain = silo.faceted_get_ref::<MyGrain>("key", &[
+    ///     FacetDescriptor { name: "profile".into(), storage: "postgres".into() },
+    ///     FacetDescriptor { name: "preferences".into(), storage: "redis".into() },
+    /// ]);
+    /// ```
+    pub fn faceted_get_ref<G>(
+        &self,
+        key: impl Into<String>,
+        facet_descriptors: &[FacetDescriptor],
+    ) -> FacetedGrainRef<G>
+    where
+        G: PersistentGrain,
+        G::State: Serialize + DeserializeOwned,
+    {
+        let grain_id = GrainId {
+            type_name: std::any::type_name::<G>(),
+            key: key.into(),
+        };
+
+        // Resolve facet descriptors to store+serializer pairs
+        let mut resolved = HashMap::new();
+        for desc in facet_descriptors {
+            let entry = self.stores
+                .get(&desc.storage)
+                .or_else(|| self.stores.get("default"))
+                .expect("facet references unknown store and no default store registered");
+            resolved.insert(
+                desc.name.clone(),
+                ResolvedFacet {
+                    name: desc.name.clone(),
+                    store: entry.store.clone(),
+                    serializer: entry.serializer,
+                },
+            );
+        }
+
+        let activator: Arc<dyn GrainActivator> = self.directory.clone();
+        let entry = self.entry_for::<G>();
+        let store = entry.store.clone();
+        let serializer = entry.serializer;
+
+        let activator_for_closure = activator.clone();
+        let strategy = PersistenceStrategy::default();
+        let sender = activator.get_or_insert(
+            grain_id.clone(),
+            Box::new(move |id, cancellation| {
+                let (tx, rx) = mpsc::channel(orlando_core::MAILBOX_CAPACITY);
+                let task = tokio::spawn(async move {
+                    persistent_mailbox::run::<G>(
+                        id, rx, activator_for_closure, store, strategy, cancellation, serializer, None,
+                    )
+                    .await;
+                });
+                (tx, task)
+            }),
+        );
+
+        let facet_ctx = FacetContext::new(grain_id.clone(), resolved);
+        FacetedGrainRef::new(sender, facet_ctx)
     }
 
     /// Access the default state store.
@@ -636,6 +705,98 @@ where
 
                     let _ = tx.send(Box::new(Ok::<M::Result, String>(result))
                         as Box<dyn Any + Send>);
+                })
+            },
+        ));
+
+        self.sender
+            .send(envelope)
+            .await
+            .map_err(|_| GrainError::MailboxClosed)?;
+
+        let response = tokio::time::timeout(G::ask_timeout(), rx)
+            .await
+            .map_err(|_| GrainError::Timeout(G::ask_timeout()))?
+            .map_err(|_| GrainError::MailboxClosed)?;
+
+        match response.downcast::<Result<M::Result, String>>() {
+            Ok(boxed) => match *boxed {
+                Ok(result) => Ok(result),
+                Err(e) => Err(GrainError::HandlerFailed(e)),
+            },
+            Err(_) => Err(GrainError::ReplyTypeMismatch),
+        }
+    }
+}
+
+/// A grain reference for grains with named state facets.
+///
+/// Facets are independently-persisted state objects, each potentially on a
+/// different store. The handler receives a `FacetContext` to load/save facets.
+pub struct FacetedGrainRef<G: Grain> {
+    sender: mpsc::Sender<Envelope>,
+    facet_ctx: FacetContext,
+    _marker: std::marker::PhantomData<G>,
+}
+
+impl<G: Grain> std::fmt::Debug for FacetedGrainRef<G> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FacetedGrainRef")
+            .field("facets", &self.facet_ctx)
+            .finish()
+    }
+}
+
+impl<G: Grain> Clone for FacetedGrainRef<G> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            facet_ctx: self.facet_ctx.clone(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<G: PersistentGrain> FacetedGrainRef<G>
+where
+    G::State: Serialize + DeserializeOwned,
+{
+    pub(crate) fn new(sender: mpsc::Sender<Envelope>, facet_ctx: FacetContext) -> Self {
+        Self {
+            sender,
+            facet_ctx,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Send a message to this faceted grain and await the result.
+    ///
+    /// The handler receives a `FacetContext` for accessing named state facets.
+    pub async fn ask<M>(&self, msg: M) -> Result<M::Result, GrainError>
+    where
+        M: Message,
+        G: FacetedHandler<M>,
+    {
+        let (tx, rx) = oneshot::channel::<Box<dyn Any + Send>>();
+        let facet_ctx = self.facet_ctx.clone();
+
+        let envelope = Envelope::new(Box::new(
+            move |state_any: &mut (dyn Any + Send),
+                  ctx: &GrainContext|
+                  -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+                let Some(state) = state_any.downcast_mut::<G::State>() else {
+                    tracing::error!("grain state type mismatch in faceted handler — dropped");
+                    let _ = tx.send(Box::new(Err::<M::Result, String>(
+                        "grain state type mismatch".to_string(),
+                    )) as Box<dyn Any + Send>);
+                    return Box::pin(async {});
+                };
+
+                Box::pin(async move {
+                    let result =
+                        <G as FacetedHandler<M>>::handle(state, msg, ctx, &facet_ctx).await;
+                    let _ = tx
+                        .send(Box::new(Ok::<M::Result, String>(result)) as Box<dyn Any + Send>);
                 })
             },
         ));

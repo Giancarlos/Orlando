@@ -1,3 +1,4 @@
+pub(crate) mod facet;
 mod file_store;
 mod journal_store;
 mod journaled_grain;
@@ -8,6 +9,8 @@ mod multi_transaction;
 mod persistent_grain;
 pub(crate) mod persistent_mailbox;
 mod persistent_silo;
+mod replication_log;
+pub(crate) mod replication_sink;
 mod serializer;
 mod sqlite_store;
 mod store;
@@ -23,13 +26,16 @@ pub use journaled_grain::{JournaledGrain, JournaledHandler};
 pub use memory_journal_store::InMemoryJournalStore;
 pub use memory_store::InMemoryStateStore;
 pub use multi_transaction::{TransactionCoordinator, TransactionError, TxId};
-pub use persistent_grain::{PersistentGrain, TransactionalGrain, TransactionalHandler};
+pub use facet::{FacetContext, FacetDescriptor};
+pub use persistent_grain::{FacetedHandler, PersistentGrain, TransactionalGrain, TransactionalHandler};
 pub use persistent_silo::{
-    JournaledGrainRef, PersistentSilo, PersistentSiloBuilder, TransactionalGrainRef,
+    FacetedGrainRef, JournaledGrainRef, PersistentSilo, PersistentSiloBuilder, TransactionalGrainRef,
 };
 pub use sqlite_store::SqliteStateStore;
 #[cfg(feature = "postgres")]
 pub use postgres_store::PostgresStateStore;
+pub use replication_log::{InMemoryReplicationLog, ReplicationError, ReplicationLog};
+pub use replication_sink::ReplicationSink;
 pub use serializer::SerializerFormat;
 pub use store::{ETag, PersistenceError, PersistenceStrategy, StateStore};
 pub use transaction::TransactionContext;

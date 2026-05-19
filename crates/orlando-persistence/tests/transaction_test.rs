@@ -370,19 +370,20 @@ async fn read_state_returns_persisted_not_in_memory() {
 
     let counter = silo.transactional_get_ref::<TxCounter>("tx-read");
 
-    // Save count=10 to the store via save_state mid-handler
+    // SaveAndIncrement: count += 10 → save_state(10) → count += 1 → returns 11
+    // In-memory state is 11, persisted state is 10
     let count = counter
         .ask(SaveAndIncrement { amount: 10 })
         .await
         .unwrap();
-    assert_eq!(count, 10);
+    assert_eq!(count, 11);
 
-    // Now mutate in-memory to 111 and read persisted — should still be 10
+    // MutateAndReadBack: count += 101 → in-memory 112, read_state → persisted 10
     let (in_memory, persisted) = counter
         .ask(MutateAndReadBack { amount: 101 })
         .await
         .unwrap();
-    assert_eq!(in_memory, 111, "in-memory should be 10 + 101 = 111");
+    assert_eq!(in_memory, 112, "in-memory should be 11 + 101 = 112");
     assert_eq!(persisted, 10, "persisted should still be 10 (last save_state)");
 }
 

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use orlando_core::{Grain, GrainContext, GrainId, Message};
 use serde::{Serialize, de::DeserializeOwned};
 
+use crate::facet::FacetContext;
 use crate::store::PersistenceError;
 use crate::transaction::TransactionContext;
 
@@ -67,4 +68,38 @@ where
         ctx: &GrainContext,
         tx: &TransactionContext,
     ) -> Result<M::Result, PersistenceError>;
+}
+
+/// Handler trait for grains with named state facets.
+///
+/// Faceted handlers receive a `FacetContext` for accessing independently-persisted
+/// state objects. Each facet can live on a different store with a different serializer.
+///
+/// ```ignore
+/// #[async_trait]
+/// impl FacetedHandler<UpdateProfile> for MyGrain {
+///     async fn handle(
+///         state: &mut MyState,
+///         msg: UpdateProfile,
+///         ctx: &GrainContext,
+///         facets: &FacetContext,
+///     ) -> String {
+///         let mut profile: Profile = facets.load("profile").await.unwrap().unwrap_or_default();
+///         profile.name = msg.name;
+///         facets.save("profile", &profile).await.unwrap();
+///         profile.name
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait FacetedHandler<M: Message>: PersistentGrain
+where
+    Self::State: Serialize + DeserializeOwned,
+{
+    async fn handle(
+        state: &mut Self::State,
+        msg: M,
+        ctx: &GrainContext,
+        facets: &FacetContext,
+    ) -> M::Result;
 }

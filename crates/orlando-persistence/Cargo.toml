@@ -24,3 +24,11 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+
+[[example]]
+name = "postgres_counter"
+required-features = ["postgres"]
+
+[[example]]
+name = "redis_counter"
+required-features = ["redis"]

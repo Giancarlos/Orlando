@@ -9,6 +9,7 @@ use tokio::time::timeout;
 use orlando_core::{CancellationToken, Envelope, Grain, GrainActivator, GrainContext, GrainId};
 
 use crate::persistent_grain::PersistentGrain;
+use crate::replication_sink::ReplicationSink;
 use crate::serializer::SerializerFormat;
 use crate::store::{PersistenceError, PersistenceStrategy, StateStore};
 use crate::versioned_grain::VersionedGrain;
@@ -16,6 +17,9 @@ use crate::versioned_grain::VersionedGrain;
 // --- Public entry points ---
 
 /// Standard persistent mailbox. Handles reentrant grains automatically.
+///
+/// If `replication_sink` is `Some`, serialized state snapshots are sent to the
+/// sink after each handler invocation (for cross-cluster replication).
 pub(crate) async fn run<G>(
     grain_id: GrainId,
     rx: mpsc::Receiver<Envelope>,
@@ -24,6 +28,7 @@ pub(crate) async fn run<G>(
     strategy: PersistenceStrategy,
     cancellation: CancellationToken,
     serializer: SerializerFormat,
+    replication_sink: Option<Arc<ReplicationSink>>,
 ) where
     G: PersistentGrain,
     G::State: Serialize + DeserializeOwned,
@@ -36,8 +41,10 @@ pub(crate) async fn run<G>(
     let ctx = GrainContext::new(grain_id.clone(), activator)
         .with_cancellation(cancellation);
 
-    let final_state =
-        run_lifecycle::<G>(initial, rx, &ctx, &grain_id, &strategy, &store, &serializer).await;
+    let final_state = run_lifecycle::<G>(
+        initial, rx, &ctx, &grain_id, &strategy, &store, &serializer, &replication_sink,
+    )
+    .await;
 
     // Serialize synchronously (no &state across await -> no Sync bound), then save with retry
     G::on_before_save(&grain_id).await;
@@ -46,6 +53,10 @@ pub(crate) async fn run<G>(
             let saved = save_with_retry(&store, &grain_id, &bytes).await;
             if saved {
                 G::on_after_save(&grain_id).await;
+                // Final replication entry on deactivation
+                if let Some(sink) = replication_sink {
+                    sink.send(bytes);
+                }
             }
         }
         Err(e) => tracing::error!(%grain_id, error = %e, "failed to serialize grain state"),
@@ -90,7 +101,7 @@ pub(crate) async fn run_versioned<G>(
         .with_cancellation(cancellation);
 
     let final_state =
-        run_lifecycle::<G>(initial, rx, &ctx, &grain_id, &strategy, &store, &serializer).await;
+        run_lifecycle::<G>(initial, rx, &ctx, &grain_id, &strategy, &store, &serializer, &None).await;
 
     // Serialize synchronously, then save with retry + version metadata
     G::on_before_save(&grain_id).await;
@@ -133,6 +144,7 @@ async fn run_lifecycle<G: PersistentGrain>(
     strategy: &PersistenceStrategy,
     store: &Arc<dyn StateStore>,
     serializer: &SerializerFormat,
+    replication_sink: &Option<Arc<ReplicationSink>>,
 ) -> G::State
 where
     G::State: Serialize + DeserializeOwned,
@@ -140,9 +152,11 @@ where
     G::on_activate(&mut state, ctx).await;
 
     let mut state = if G::reentrant() {
-        reentrant_loop::<G>(state, rx, ctx, grain_id, strategy, store, serializer).await
+        reentrant_loop::<G>(state, rx, ctx, grain_id, strategy, store, serializer, replication_sink)
+            .await
     } else {
-        sequential_loop::<G>(state, rx, ctx, grain_id, strategy, store, serializer).await
+        sequential_loop::<G>(state, rx, ctx, grain_id, strategy, store, serializer, replication_sink)
+            .await
     };
 
     G::on_deactivate(&mut state, ctx).await;
@@ -159,6 +173,7 @@ async fn sequential_loop<G: PersistentGrain>(
     strategy: &PersistenceStrategy,
     store: &Arc<dyn StateStore>,
     serializer: &SerializerFormat,
+    replication_sink: &Option<Arc<ReplicationSink>>,
 ) -> G::State
 where
     G::State: Serialize + DeserializeOwned,
@@ -182,6 +197,10 @@ where
                             G::on_before_save(grain_id).await;
                             flush_bytes(&bytes, store, grain_id, "write-through").await;
                             G::on_after_save(grain_id).await;
+                            // Replicate after successful write-through
+                            if let Some(sink) = replication_sink {
+                                sink.send(bytes);
+                            }
                         }
                     }
                     PersistenceStrategy::WriteBack(interval) => {
@@ -192,11 +211,25 @@ where
                                 G::on_before_save(grain_id).await;
                                 flush_bytes(&bytes, store, grain_id, "write-back").await;
                                 G::on_after_save(grain_id).await;
+                                // Replicate after successful write-back
+                                if let Some(sink) = replication_sink {
+                                    sink.send(bytes);
+                                }
                             }
                             last_save = tokio::time::Instant::now();
                         }
                     }
-                    PersistenceStrategy::WriteOnDeactivate => {} // save only at the end
+                    PersistenceStrategy::WriteOnDeactivate => {
+                        // Even with WriteOnDeactivate, replicate state if sink is present
+                        // (replication and persistence are independent concerns)
+                        if let Some(sink) = replication_sink {
+                            if let Some(bytes) =
+                                try_serialize(&state, grain_id, "replication", *serializer)
+                            {
+                                sink.send(bytes);
+                            }
+                        }
+                    }
                 }
             }
             Ok(None) => {
@@ -220,6 +253,7 @@ async fn reentrant_loop<G: Grain>(
     strategy: &PersistenceStrategy,
     store: &Arc<dyn StateStore>,
     serializer: &SerializerFormat,
+    replication_sink: &Option<Arc<ReplicationSink>>,
 ) -> G::State
 where
     G::State: Serialize,
@@ -233,6 +267,7 @@ where
     // coordinating a periodic timer with the concurrent task set adds complexity
     // without clear benefit (deactivation save is the safety net).
     let write_through = matches!(strategy, PersistenceStrategy::WriteThrough);
+    let replicate = replication_sink.is_some();
 
     loop {
         tokio::select! {
@@ -255,13 +290,14 @@ where
                         let store_ref = store.clone();
                         let gid = grain_id.clone();
                         let ser = *serializer;
+                        let sink = replication_sink.clone();
                         tasks.spawn(async move {
                             // Serialize inside the lock, save outside --
                             // avoids holding &state across the store.save() await.
                             let save_bytes = {
                                 let mut guard = s.lock().await;
                                 envelope.handle(&mut **guard, &c).await;
-                                if write_through {
+                                if write_through || replicate {
                                     guard
                                         .downcast_ref::<G::State>()
                                         .and_then(|typed| try_serialize(typed, &gid, "write-through", ser))
@@ -270,7 +306,12 @@ where
                                 }
                             };
                             if let Some(bytes) = save_bytes {
-                                flush_bytes(&bytes, &store_ref, &gid, "write-through").await;
+                                if write_through {
+                                    flush_bytes(&bytes, &store_ref, &gid, "write-through").await;
+                                }
+                                if let Some(ref sink) = sink {
+                                    sink.send(bytes);
+                                }
                             }
                         });
                     }
