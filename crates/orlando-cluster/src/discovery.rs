@@ -35,8 +35,26 @@ impl StaticSeedProvider {
             .iter()
             .filter_map(|addr| {
                 let s = addr.as_ref();
-                let (host, port_str) = s.rsplit_once(':')?;
-                let port = port_str.parse::<u16>().ok()?;
+                let Some((host, port_str)) = s.rsplit_once(':') else {
+                    tracing::warn!(
+                        target: "discovery",
+                        addr = s,
+                        "ignoring invalid seed address: missing ':' separator"
+                    );
+                    return None;
+                };
+                let port = match port_str.parse::<u16>() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "discovery",
+                            addr = s,
+                            error = %e,
+                            "ignoring invalid seed address: port not a u16"
+                        );
+                        return None;
+                    }
+                };
                 Some(SiloAddress {
                     host: host.to_string(),
                     port,

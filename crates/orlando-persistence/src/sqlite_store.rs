@@ -16,7 +16,10 @@ impl SqliteStateStore {
     /// Create a new SqliteStateStore and ensure the schema exists.
     /// `url` is a SQLite connection string, e.g. `"sqlite://grains.db"` or `"sqlite::memory:"`.
     pub async fn new(url: &str) -> Result<Self, PersistenceError> {
-        let pool = SqlitePool::connect(url).await?;
+        let pool = crate::backoff::retry_store_init("sqlite_connect", || async {
+            SqlitePool::connect(url).await
+        })
+        .await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS grain_state (

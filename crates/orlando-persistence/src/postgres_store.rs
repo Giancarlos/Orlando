@@ -4,6 +4,10 @@ use sqlx::PgPool;
 
 use crate::store::{ETag, PersistenceError, StateStore};
 
+fn pg(e: sqlx::Error) -> PersistenceError {
+    PersistenceError::Postgres(e)
+}
+
 /// PostgreSQL-backed state store for production grain persistence.
 /// Stores grain state as binary in a single table keyed by (type_name, key),
 /// with an integer version column used as the ETag for optimistic concurrency.
@@ -18,7 +22,11 @@ impl PostgresStateStore {
     /// Create a new store and ensure the schema exists.
     /// `url` is a Postgres connection string, e.g. `"postgres://user:pass@localhost/orlando"`.
     pub async fn new(url: &str) -> Result<Self, PersistenceError> {
-        let pool = PgPool::connect(url).await?;
+        let pool = crate::backoff::retry_store_init("postgres_connect", || async {
+            PgPool::connect(url).await
+        })
+        .await
+        .map_err(pg)?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS grain_state (
@@ -30,7 +38,8 @@ impl PostgresStateStore {
             )",
         )
         .execute(&pool)
-        .await?;
+        .await
+        .map_err(pg)?;
 
         Ok(Self { pool })
     }
@@ -45,7 +54,8 @@ impl StateStore for PostgresStateStore {
         .bind(grain_id.type_name)
         .bind(&grain_id.key)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .map_err(pg)?;
 
         Ok(row.map(|(data,)| data))
     }
@@ -59,7 +69,8 @@ impl StateStore for PostgresStateStore {
         .bind(&grain_id.key)
         .bind(data)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(pg)?;
 
         Ok(())
     }
@@ -69,7 +80,8 @@ impl StateStore for PostgresStateStore {
             .bind(grain_id.type_name)
             .bind(&grain_id.key)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(pg)?;
 
         Ok(())
     }
@@ -84,7 +96,8 @@ impl StateStore for PostgresStateStore {
         .bind(grain_id.type_name)
         .bind(&grain_id.key)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .map_err(pg)?;
 
         Ok(row.map(|(data, version)| (data, ETag(version.to_string()))))
     }
@@ -97,7 +110,7 @@ impl StateStore for PostgresStateStore {
     ) -> Result<ETag, PersistenceError> {
         match expected_etag {
             None => {
-                // Expect no existing row — plain INSERT, fails on conflict.
+                // Expect no existing row — plain INSERT, fails on unique violation.
                 let result = sqlx::query(
                     "INSERT INTO grain_state (type_name, key, data, version) VALUES ($1, $2, $3, 1)",
                 )
@@ -109,16 +122,14 @@ impl StateStore for PostgresStateStore {
 
                 match result {
                     Ok(_) => Ok(ETag("1".to_string())),
-                    Err(sqlx::Error::Database(ref db_err))
-                        if db_err.message().contains("duplicate key") =>
-                    {
+                    Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
                         let current = self.load_with_etag(grain_id).await?;
                         Err(PersistenceError::EtagMismatch {
                             expected: None,
                             actual: current.map(|(_, etag)| etag),
                         })
                     }
-                    Err(e) => Err(PersistenceError::Sqlite(e)),
+                    Err(e) => Err(PersistenceError::Postgres(e)),
                 }
             }
             Some(expected) => {
@@ -141,7 +152,8 @@ impl StateStore for PostgresStateStore {
                 .bind(&grain_id.key)
                 .bind(expected_version)
                 .execute(&self.pool)
-                .await?;
+                .await
+                .map_err(pg)?;
 
                 if result.rows_affected() == 0 {
                     let current = self.load_with_etag(grain_id).await?;

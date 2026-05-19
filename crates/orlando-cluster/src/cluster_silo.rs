@@ -218,18 +218,16 @@ impl ClusterSilo {
             })
             .collect();
 
-        // Add all members to our ring and SWIM state
+        // Atomic transition: hold the swim_state mutex across both the ring
+        // ArcSwap store and the SwimState members inserts.
         {
+            let mut swim = self.swim_state.lock().await;
             let mut new_ring = (**self.ring.load()).clone();
             for silo in &members {
                 new_ring.add(silo.clone());
                 let _ = self.change_tx.send(MembershipChange::SiloJoined(silo.clone()));
             }
             self.ring.store(Arc::new(new_ring));
-        }
-
-        {
-            let mut swim = self.swim_state.lock().await;
             for silo in &members {
                 if silo.silo_id != self.local_addr.silo_id {
                     swim.members.insert(
@@ -579,6 +577,26 @@ impl ClusterSiloBuilder {
     }
 
     pub fn build(self) -> ClusterSilo {
+        #[cfg(not(test))]
+        {
+            let no_auth = self.auth.is_none() && self.auth_token.is_none();
+            let no_tls = self.tls_identity.is_none() && self.tls_ca.is_none();
+            if no_auth {
+                tracing::warn!(
+                    "ClusterSilo built without authentication — silo-to-silo RPC is \
+                     unauthenticated. Any reachable node can join the cluster, invoke \
+                     grains, and read state. For production, call .auth(SharedSecretAuth::new(..)) \
+                     or .auth_token(..) on the builder."
+                );
+            }
+            if no_tls {
+                tracing::warn!(
+                    "ClusterSilo built without TLS — silo-to-silo RPC traffic is plaintext \
+                     on the wire. For production, configure .tls_identity(..) and .tls_ca(..)."
+                );
+            }
+        }
+
         let silo_id = self
             .silo_id
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());

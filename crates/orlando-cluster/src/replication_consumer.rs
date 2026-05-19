@@ -1,6 +1,21 @@
 //! Background task that polls the `ReplicationLog` for new entries and
 //! applies them to a local replica store. Secondary clusters run one
 //! consumer per replicated grain to maintain read-only copies.
+//!
+//! # Snapshot semantics (IMPORTANT)
+//!
+//! The consumer reads up to 100 entries per poll and **only applies the
+//! latest one** — intermediates in the batch are dropped. This is safe
+//! ONLY because today every `ReplicationEntry` carries a complete
+//! `ReplicationEntryType::FullState` snapshot. Each snapshot replaces the
+//! replica state in full, so older snapshots in the same batch are
+//! redundant.
+//!
+//! `ReplicationEntryType::Delta` is reserved for a future event-sourced
+//! replication mode; it is **not** supported by this consumer. If a
+//! `Delta` entry is encountered the consumer logs an error and skips it,
+//! because applying only the latest delta would corrupt replica state.
+//! Full delta replay (fold over intermediates) is a separate feature.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -71,6 +86,29 @@ impl ReplicationConsumer {
                     // No new entries, continue polling
                 }
                 Ok(entries) => {
+                    use orlando_core::replication::ReplicationEntryType;
+
+                    // Skip-to-latest is only sound for FullState snapshots — see module docs.
+                    // If any entry in the batch is a Delta, log an error and refuse the batch.
+                    if let Some(delta) = entries
+                        .iter()
+                        .find(|e| e.entry_type == ReplicationEntryType::Delta)
+                    {
+                        tracing::error!(
+                            grain_type = %delta.grain_type,
+                            grain_key = %delta.grain_key,
+                            sequence = delta.sequence,
+                            "replication consumer encountered Delta entry but only \
+                             FullState is supported; skipping batch to avoid corruption"
+                        );
+                        // Advance past the offending sequence so we don't loop forever.
+                        last_sequence = entries
+                            .last()
+                            .map(|e| e.sequence)
+                            .unwrap_or(last_sequence);
+                        continue;
+                    }
+
                     for entry in &entries {
                         tracing::debug!(
                             grain_type = %entry.grain_type,
@@ -81,7 +119,8 @@ impl ReplicationConsumer {
                         );
                     }
 
-                    // Apply the latest full-state snapshot (skip intermediates)
+                    // Apply the latest full-state snapshot (intermediates are
+                    // redundant under FullState semantics).
                     if let Some(latest) = entries.last() {
                         self.replica_store.update(
                             &self.grain_type,

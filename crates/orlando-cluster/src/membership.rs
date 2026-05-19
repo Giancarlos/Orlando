@@ -173,15 +173,14 @@ impl Membership for MembershipService {
 
         tracing::info!(silo_id = %silo.silo_id, "learned about new silo via gossip");
 
+        // Atomic transition: hold the swim_state mutex across both the ring
+        // ArcSwap store and the SwimState members insert so concurrent readers
+        // never see the ring out of sync with the membership table.
         {
+            let mut state = self.swim_state.lock().await;
             let mut new_ring = (**self.ring.load()).clone();
             new_ring.add(silo.clone());
             self.ring.store(Arc::new(new_ring));
-        }
-
-        // Add to SWIM state
-        {
-            let mut state = self.swim_state.lock().await;
             state.members.insert(silo.silo_id.clone(), SwimMember {
                 addr: silo.clone(),
                 status: MemberStatus::Alive,
@@ -217,15 +216,13 @@ impl Membership for MembershipService {
 
         tracing::info!(silo_id = %silo.silo_id, "learned about dead silo via gossip");
 
+        // Atomic transition: hold the swim_state mutex across both the ring
+        // ArcSwap store and the SwimState members remove.
         {
+            let mut state = self.swim_state.lock().await;
             let mut new_ring = (**self.ring.load()).clone();
             new_ring.remove(&silo);
             self.ring.store(Arc::new(new_ring));
-        }
-
-        // Remove from SWIM state
-        {
-            let mut state = self.swim_state.lock().await;
             state.members.remove(&silo.silo_id);
         }
 

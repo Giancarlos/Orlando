@@ -21,9 +21,11 @@ uuid = { workspace = true }
 sqlx = { workspace = true }
 fred = { workspace = true, optional = true }
 serde_json = { workspace = true }
+backoff = { version = "0.4", features = ["tokio"] }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+tempfile = "3"
 
 [[example]]
 name = "postgres_counter"

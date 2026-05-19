@@ -14,6 +14,10 @@ use crate::proto::{
     gossip_entry::UpdateType,
 };
 
+/// Maximum number of pending gossip updates buffered in `SwimState`.
+/// Bounded to prevent unbounded growth under high membership churn.
+pub const MAX_PENDING_GOSSIP: usize = 1024;
+
 // --- Types ---
 
 /// Status of a member in the SWIM protocol.
@@ -78,7 +82,19 @@ impl SwimState {
     }
 
     /// Enqueue a gossip update for dissemination.
+    ///
+    /// The queue is bounded at `MAX_PENDING_GOSSIP`. When full, the oldest
+    /// entry is dropped — gossip is best-effort and newer updates are more
+    /// valuable than stale ones.
     pub fn enqueue_gossip(&mut self, update: GossipUpdate) {
+        if self.pending_gossip.len() >= MAX_PENDING_GOSSIP {
+            self.pending_gossip.pop_front();
+            tracing::warn!(
+                target: "swim",
+                max = MAX_PENDING_GOSSIP,
+                "gossip queue full, dropping oldest entry"
+            );
+        }
         self.pending_gossip.push_back(update);
     }
 
@@ -479,6 +495,39 @@ async fn expire_suspects(
         let mut state = swim_state.lock().await;
         for silo_id in &expired {
             state.declare_dead(silo_id, ring, pool, change_tx);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hash_ring::SiloAddress;
+
+    fn addr(id: &str) -> SiloAddress {
+        SiloAddress {
+            silo_id: id.to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 7000,
+        }
+    }
+
+    #[test]
+    fn enqueue_gossip_bounded_drops_oldest() {
+        let mut state = SwimState::new(addr("local"));
+        for i in 0..(MAX_PENDING_GOSSIP + 500) {
+            state.enqueue_gossip(GossipUpdate::Alive {
+                addr: addr(&format!("s{i}")),
+                incarnation: i as u64,
+            });
+        }
+        let drained = state.drain_gossip(usize::MAX);
+        assert_eq!(drained.len(), MAX_PENDING_GOSSIP);
+        // First entry should be one of the later inserts (oldest dropped)
+        if let GossipUpdate::Alive { incarnation, .. } = &drained[0] {
+            assert_eq!(*incarnation, 500);
+        } else {
+            panic!("expected Alive");
         }
     }
 }

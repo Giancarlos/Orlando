@@ -19,7 +19,12 @@ impl RedisStateStore {
     pub async fn new(url: &str) -> Result<Self, PersistenceError> {
         let config = Config::from_url(url).map_err(redis_err)?;
         let client = Builder::from_config(config).build().map_err(redis_err)?;
-        client.init().await.map_err(redis_err)?;
+        crate::backoff::retry_store_init("redis_connect", || {
+            let client = client.clone();
+            async move { client.init().await }
+        })
+        .await
+        .map_err(redis_err)?;
         Ok(Self { client })
     }
 
