@@ -34,7 +34,7 @@ This model was pioneered by [Microsoft Orleans](https://www.microsoft.com/en-us/
 - **State versioning / migration** — `VersionedGrain` with migration chains (`v0 -> v1 -> v2`) for schema evolution.
 - **Event sourcing** — `JournaledGrain` appends events to a journal, replays on activation. Automatic snapshots.
 - **Optimistic concurrency** — ETags on persisted state detect concurrent writes (`EtagMismatch` error).
-- **Backends** — `InMemoryStateStore`, `FileStateStore`, `SqliteStateStore`.
+- **Backends** — `InMemoryStateStore`, `FileStateStore`, `SqliteStateStore`, `PostgresStateStore`, `RedisStateStore`.
 
 ### Timers and Reminders
 - **Volatile timers** — Periodic messages into a grain's mailbox. Cancelled on deactivation or handle drop.
@@ -53,6 +53,13 @@ This model was pioneered by [Microsoft Orleans](https://www.microsoft.com/en-us/
 - **TLS and authentication** — `ServerTlsConfig` / `ClientTlsConfig` for encrypted transport. Pluggable `ClusterAuth` trait with `SharedSecretAuth` included.
 - **Service discovery** — `MembershipProvider` trait with `StaticSeedProvider` and `DnsMembershipProvider` (Kubernetes headless services).
 
+### Multi-Cluster
+- **Global Single Instance (GSI)** — Cross-cluster directory ensures one activation per grain globally. Epoch-based CAS fencing prevents split-brain.
+- **Cross-cluster forwarding** — Grain calls transparently routed to the owning cluster via gRPC gateway.
+- **Replication** — Primary streams state to secondaries via `ReplicationLog` + `ReplicationSink`. `ReplicaStore` serves stale reads within configurable staleness.
+- **Failover** — `FailoverManager` monitors peer health, promotes grains via epoch increment on cluster failure. Graceful drain notifications skip grace period.
+- **Data residency** — Pin grain types to specific clusters. Transport layer enforces constraints automatically.
+
 ### Observability
 - **Metrics** — `MetricsFilter` records `calls_total`, `call_duration_seconds`, `errors_total` per grain type. `activations_active` gauge. Uses the `metrics` crate (backend-agnostic — wire in Prometheus, Datadog, etc.).
 - **Structured tracing** — Every activation, deactivation, message dispatch, and failure logged via `tracing`.
@@ -69,7 +76,7 @@ This model was pioneered by [Microsoft Orleans](https://www.microsoft.com/en-us/
 | `orlando-macros` | `#[grain]`, `#[message]`, `#[grain_handler]` proc macros |
 | `orlando-persistence` | Persistent/transactional/versioned/journaled grains, state stores, ETags |
 | `orlando-timers` | Volatile timers and durable reminders |
-| `orlando-cluster` | Multi-silo clustering, gRPC transport, SWIM, placement, TLS, auth, retry, discovery |
+| `orlando-cluster` | Multi-silo clustering, gRPC transport, SWIM, placement, TLS, auth, retry, discovery, multi-cluster geo-replication |
 | `orlando-client` | External client SDK for non-silo processes |
 
 ## Quick Start
@@ -131,7 +138,7 @@ let counter = silo.persistent_get_ref_with_strategy::<PersistentCounter>(
 );
 ```
 
-Available backends: `InMemoryStateStore`, `FileStateStore`, `SqliteStateStore`.
+Available backends: `InMemoryStateStore`, `FileStateStore`, `SqliteStateStore`, `PostgresStateStore`, `RedisStateStore`.
 
 ## Clustering
 
@@ -182,6 +189,31 @@ cargo run -p orlando-timers --example reminders              # durable reminders
 cargo run -p orlando-cluster --example cluster               # two-silo cluster
 ```
 
+## Multi-Cluster / Geo-Replication
+
+```rust
+use orlando_cluster::{ClusterSilo, MultiClusterConfig, FailoverConfig};
+
+let multi_cluster = MultiClusterConfig::new("us-east")
+    .peer("eu-west", "eu-west.example.com:9001");
+
+let silo = ClusterSilo::builder()
+    .host("127.0.0.1")
+    .port(9001)
+    .silo_id("silo-a")
+    .multi_cluster(multi_cluster)
+    .failover_config(FailoverConfig::default())
+    .register::<Counter, Increment>()
+    .build();
+```
+
+- **Global Single Instance (GSI)** -- One activation per grain across all clusters. Cross-cluster directory tracks ownership with epoch-based fencing.
+- **Cross-cluster forwarding** -- Any cluster can accept a grain call and forward it to the owning cluster via gRPC gateway.
+- **Epoch-based failover** -- When a cluster becomes unreachable, `FailoverManager` promotes grains to healthy clusters via CAS with monotonically increasing epochs. Stale primaries are fenced out.
+- **Replication** -- Primary clusters stream grain state to secondaries via `ReplicationLog`. Secondaries maintain a `ReplicaStore` for serving stale reads within a configurable staleness window.
+- **Data residency** -- Pin grain types to specific clusters via `#[grain(allowed_clusters = &["eu-west"])]`. Enforced at the transport layer -- requests are forwarded to allowed clusters automatically.
+- **Graceful drain** -- `DrainNotification` skips failover grace periods during planned shutdowns.
+
 ## Orleans Feature Comparison
 
 | Feature | Orleans | Orlando | Notes |
@@ -212,15 +244,19 @@ cargo run -p orlando-cluster --example cluster               # two-silo cluster
 | Service discovery | Azure, K8s, Consul | DNS, static seeds | No cloud-specific providers yet |
 | Retry policies | Yes | Yes | Exponential backoff, transient-only |
 | Client SDK | Orleans.Client | orlando-client | Typed + protobuf |
-| Multi-cluster | Yes | No | Single cluster only |
+| Multi-cluster | Yes | Yes | GSI directory, cross-cluster forwarding, epoch fencing |
+| Geo-replication | Yes | Yes | Replication log, replica store, stale reads |
+| Failover | Yes | Yes | Epoch-based CAS promotion, graceful drain |
+| Data residency | Yes | Yes | Per-grain cluster pinning, transport-enforced |
 | Grain extensions | Yes | No | |
 | Distributed transactions | Yes | No | Single-grain only |
+| Streaming providers | Kafka, EventHub | In-process only | No external stream adapters yet |
 | Dashboard UI | Yes | No | Use Prometheus + Grafana |
 
 ## Testing
 
 ```bash
-cargo test --workspace                          # 101 tests
+cargo test --workspace                          # 165 tests
 cargo clippy --workspace -- -D warnings         # lint check
 ```
 

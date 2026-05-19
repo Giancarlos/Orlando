@@ -1402,9 +1402,12 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bincode",
+ "bytes",
  "dashmap",
  "fastrand",
+ "futures-util",
  "orlando-core",
+ "orlando-persistence",
  "orlando-runtime",
  "prost",
  "reqwest",
@@ -1412,6 +1415,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tonic",
  "tonic-build",
  "tracing",
@@ -1424,6 +1428,7 @@ name = "orlando-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "serde",
  "thiserror",
  "tokio",
  "tokio-util",

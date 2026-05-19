@@ -6,6 +6,7 @@ mod connection_pool;
 mod cross_cluster_directory;
 pub mod discovery;
 mod error;
+mod failover;
 mod failure_detector;
 mod hash_ring;
 mod membership;
@@ -14,9 +15,15 @@ mod multi_cluster;
 mod network_message;
 mod placement;
 mod rebalancer;
+mod replication_consumer;
+mod replication_producer;
+pub(crate) mod store_wrapper;
 pub(crate) mod swim;
 mod retry;
 mod transport;
+
+#[cfg(feature = "tcp-transport")]
+pub mod tcp_transport;
 
 pub mod proto {
     tonic::include_proto!("orlando.cluster");
@@ -32,6 +39,7 @@ pub use cross_cluster_directory::{
     CrossClusterDirectory, DirectoryError, GrainOwnership, InMemoryCrossClusterDirectory,
 };
 pub use error::ClusterError;
+pub use failover::{FailoverConfig, FailoverManager, FailoverPhase};
 pub use failure_detector::{FailureDetector, FailureDetectorConfig, MembershipChange};
 pub use hash_ring::{HashRing, SiloAddress};
 pub use membership::MembershipService;
@@ -43,5 +51,8 @@ pub use discovery::{DnsMembershipProvider, MembershipProvider, StaticSeedProvide
 #[cfg(feature = "consul")]
 pub use discovery::ConsulMembershipProvider;
 pub use rebalancer::Rebalancer;
+pub use replication_consumer::ReplicationConsumer;
+pub use replication_producer::spawn_replication_pump;
+pub use store_wrapper::{ReplicaEntry, ReplicaStore};
 pub use retry::RetryPolicy;
 pub use transport::GrainTransportService;

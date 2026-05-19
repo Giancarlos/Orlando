@@ -6,9 +6,11 @@ edition = "2024"
 [features]
 default = []
 consul = ["dep:reqwest", "dep:serde_json"]
+tcp-transport = ["dep:tokio-util", "dep:bytes", "dep:futures-util"]
 
 [dependencies]
 orlando-core = { path = "../orlando-core" }
+orlando-persistence = { path = "../orlando-persistence" }
 orlando-runtime = { path = "../orlando-runtime" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -24,6 +26,9 @@ arc-swap = { workspace = true }
 fastrand = "2"
 reqwest = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+futures-util = { version = "0.3", features = ["sink"], optional = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
