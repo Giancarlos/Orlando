@@ -53,6 +53,8 @@ pub struct ClusterSilo {
     local_cluster_id: Option<ClusterId>,
     peer_endpoints: Option<Arc<HashMap<ClusterId, String>>>,
     failover_config: FailoverConfig,
+    health_port: Option<u16>,
+    store_probe: Option<crate::health_server::StoreProbe>,
     #[cfg(feature = "tcp-transport")]
     tcp_port: Option<u16>,
     #[cfg(feature = "tcp-transport")]
@@ -353,6 +355,20 @@ impl ClusterSilo {
         );
         tokio::spawn(rebalancer.run());
 
+        // Spawn HTTP health server if configured
+        if let Some(health_port) = self.health_port {
+            let health_addr: SocketAddr =
+                format!("{}:{}", self.local_addr.host, health_port).parse()?;
+            let ring = self.ring.clone();
+            let probe = self.store_probe.clone();
+            let shutdown_rx = self.shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                crate::health_server::run_health_server(health_addr, ring, probe, shutdown_rx)
+                    .await;
+            });
+            tracing::info!(addr = %health_addr, "health server started");
+        }
+
         // Spawn multi-cluster health checker + failover manager if configured
         if let Some(mc_config) = &self.multi_cluster {
             let health = Arc::new(ClusterHealth::new(
@@ -445,6 +461,8 @@ pub struct ClusterSiloBuilder {
     local_cluster_id: Option<ClusterId>,
     peer_endpoints: Option<HashMap<ClusterId, String>>,
     failover_config: FailoverConfig,
+    health_port: Option<u16>,
+    store_probe: Option<crate::health_server::StoreProbe>,
 }
 
 impl ClusterSiloBuilder {
@@ -467,7 +485,25 @@ impl ClusterSiloBuilder {
             local_cluster_id: None,
             peer_endpoints: None,
             failover_config: FailoverConfig::default(),
+            health_port: None,
+            store_probe: None,
         }
+    }
+
+    /// Bind an HTTP server on `host:port` exposing `/healthz` (liveness) and
+    /// `/readyz` (readiness) endpoints for orchestrator probes. The host
+    /// matches the gRPC bind host. When unset, no health server runs.
+    pub fn health_port(mut self, port: u16) -> Self {
+        self.health_port = Some(port);
+        self
+    }
+
+    /// Optional dependency probe checked by `/readyz`. Use this to verify
+    /// the backing store (Postgres, Redis, etc.) is reachable. Returning
+    /// `Err` causes `/readyz` to respond with 503.
+    pub fn store_probe(mut self, probe: crate::health_server::StoreProbe) -> Self {
+        self.store_probe = Some(probe);
+        self
     }
 
     pub fn host(mut self, host: impl Into<String>) -> Self {
@@ -663,6 +699,8 @@ impl ClusterSiloBuilder {
             local_cluster_id: self.local_cluster_id,
             peer_endpoints: self.peer_endpoints.map(Arc::new),
             failover_config: self.failover_config,
+            health_port: self.health_port,
+            store_probe: self.store_probe,
             #[cfg(feature = "tcp-transport")]
             tcp_port: None,
             #[cfg(feature = "tcp-transport")]

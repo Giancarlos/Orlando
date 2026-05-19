@@ -24,6 +24,7 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 arc-swap = { workspace = true }
 fastrand = "2"
+axum = "0.7"
 reqwest = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
@@ -32,6 +33,7 @@ futures-util = { version = "0.3", features = ["sink"], optional = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
 
 [build-dependencies]
 tonic-build = "0.12"
