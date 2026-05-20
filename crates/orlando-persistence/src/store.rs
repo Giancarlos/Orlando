@@ -23,6 +23,12 @@ pub enum PersistenceError {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] sqlx::Error),
 
+    #[error("Postgres error: {0}")]
+    Postgres(sqlx::Error),
+
+    #[error("schema migration failed: {0}")]
+    Migration(#[from] sqlx::migrate::MigrateError),
+
     #[error("etag mismatch: expected {expected:?}, found {actual:?}")]
     EtagMismatch {
         expected: Option<ETag>,

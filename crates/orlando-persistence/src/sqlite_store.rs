@@ -21,17 +21,7 @@ impl SqliteStateStore {
         })
         .await?;
 
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS grain_state (
-                type_name TEXT NOT NULL,
-                key       TEXT NOT NULL,
-                data      BLOB NOT NULL,
-                version   INTEGER NOT NULL DEFAULT 1,
-                PRIMARY KEY (type_name, key)
-            )",
-        )
-        .execute(&pool)
-        .await?;
+        sqlx::migrate!("migrations/sqlite").run(&pool).await?;
 
         Ok(Self { pool })
     }

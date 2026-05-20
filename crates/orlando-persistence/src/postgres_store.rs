@@ -28,18 +28,7 @@ impl PostgresStateStore {
         .await
         .map_err(pg)?;
 
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS grain_state (
-                type_name TEXT NOT NULL,
-                key       TEXT NOT NULL,
-                data      BYTEA NOT NULL,
-                version   BIGINT NOT NULL DEFAULT 1,
-                PRIMARY KEY (type_name, key)
-            )",
-        )
-        .execute(&pool)
-        .await
-        .map_err(pg)?;
+        sqlx::migrate!("migrations/postgres").run(&pool).await?;
 
         Ok(Self { pool })
     }
