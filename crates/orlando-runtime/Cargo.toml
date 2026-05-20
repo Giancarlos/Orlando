@@ -16,3 +16,4 @@ metrics = { workspace = true }
 orlando-macros = { path = "../orlando-macros" }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
+metrics-exporter-prometheus = "0.16"

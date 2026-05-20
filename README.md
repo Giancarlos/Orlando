@@ -63,6 +63,19 @@ This model was pioneered by [Microsoft Orleans](https://www.microsoft.com/en-us/
 ### Observability
 - **Metrics** — `MetricsFilter` records `calls_total`, `call_duration_seconds`, `errors_total` per grain type. `activations_active` gauge. Uses the `metrics` crate (backend-agnostic — wire in Prometheus, Datadog, etc.).
 - **Structured tracing** — Every activation, deactivation, message dispatch, and failure logged via `tracing`.
+- **Health endpoints** — `ClusterSiloBuilder::health_port(p)` exposes `GET /healthz` (liveness) and `GET /readyz` (readiness, with optional store probe) for Kubernetes probes.
+
+#### Prometheus exporter example
+
+A runnable example wires `MetricsFilter` to a Prometheus scrape endpoint:
+
+```sh
+cargo run -p orlando-runtime --example prometheus_exporter
+# in another shell:
+curl -s http://127.0.0.1:9090/metrics | grep orlando
+```
+
+It installs `metrics-exporter-prometheus` as the global recorder, builds a `Silo` with `MetricsFilter`, and drives a counter grain to emit `orlando_grain_*` series.
 
 ### External Clients
 - **Client SDK** — `orlando-client` crate for non-silo processes. Connects to any silo, discovers the cluster, routes via local hash ring. Typed (bincode) and untyped (protobuf) message support. Automatic retry with membership refresh on stale ring.
