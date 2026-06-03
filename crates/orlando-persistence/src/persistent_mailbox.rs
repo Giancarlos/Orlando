@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::mpsc;
@@ -13,6 +13,24 @@ use crate::replication_sink::ReplicationSink;
 use crate::serializer::SerializerFormat;
 use crate::store::{PersistenceError, PersistenceStrategy, StateStore};
 use crate::versioned_grain::VersionedGrain;
+
+/// Emits a one-time warning per process when grains run under
+/// `PersistenceStrategy::WriteOnDeactivate`. State changes between activation
+/// and idle-deactivation are lost if the silo crashes — switch to
+/// `WriteThrough` or `WriteBack` for crash-durability.
+fn warn_once_if_write_on_deactivate(strategy: &PersistenceStrategy) {
+    static WARNED: Once = Once::new();
+    if matches!(strategy, PersistenceStrategy::WriteOnDeactivate) {
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "persistence: at least one grain uses PersistenceStrategy::WriteOnDeactivate \
+                 (the default). State changes are lost on silo crash before idle deactivation. \
+                 Use .strategy(PersistenceStrategy::WriteThrough) on the grain ref for \
+                 crash-durability, or WriteBack(interval) for a periodic flush tradeoff."
+            );
+        });
+    }
+}
 
 // --- Public entry points ---
 
@@ -33,6 +51,7 @@ pub(crate) async fn run<G>(
     G: PersistentGrain,
     G::State: Serialize + DeserializeOwned,
 {
+    warn_once_if_write_on_deactivate(&strategy);
     G::on_before_load(&grain_id).await;
     let initial = load_or_default::<G::State>(&store, &grain_id, serializer).await;
     G::on_after_load(&grain_id).await;
@@ -80,6 +99,7 @@ pub(crate) async fn run_versioned<G>(
     G: VersionedGrain,
     G::State: Serialize + DeserializeOwned,
 {
+    warn_once_if_write_on_deactivate(&strategy);
     G::on_before_load(&grain_id).await;
     let initial = match load_versioned_state::<G>(&store, &grain_id, serializer).await {
         Ok(Some(s)) => {

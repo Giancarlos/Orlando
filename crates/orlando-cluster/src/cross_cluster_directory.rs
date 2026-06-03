@@ -38,6 +38,18 @@ pub trait CrossClusterDirectory: Send + Sync + 'static {
     ) -> Result<(), DirectoryError> {
         Ok(())
     }
+
+    /// Enumerate grains currently owned by a given cluster. Used by failover
+    /// to discover which grains require promotion when a peer is declared dead.
+    ///
+    /// Default returns an empty list so existing implementors compile without
+    /// modification; backends should override to enable failover support.
+    async fn list_owned_by(
+        &self,
+        _cluster_id: &ClusterId,
+    ) -> Result<Vec<(GrainId, GrainOwnership)>, DirectoryError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Who owns a grain activation.
@@ -62,7 +74,7 @@ pub enum DirectoryError {
 /// In-memory implementation for testing and single-process multi-cluster setups.
 #[derive(Debug, Default)]
 pub struct InMemoryCrossClusterDirectory {
-    entries: Mutex<HashMap<String, GrainOwnership>>,
+    entries: Mutex<HashMap<String, (GrainId, GrainOwnership)>>,
 }
 
 impl InMemoryCrossClusterDirectory {
@@ -82,7 +94,7 @@ impl CrossClusterDirectory for InMemoryCrossClusterDirectory {
             .entries
             .lock()
             .map_err(|e| DirectoryError::Backend(e.to_string()))?;
-        Ok(entries.get(&Self::key(grain_id)).cloned())
+        Ok(entries.get(&Self::key(grain_id)).map(|(_, o)| o.clone()))
     }
 
     async fn register(
@@ -98,7 +110,7 @@ impl CrossClusterDirectory for InMemoryCrossClusterDirectory {
         let key = Self::key(grain_id);
 
         // CAS: first writer wins, but higher epoch can reclaim
-        if let Some(existing) = entries.get(&key) {
+        if let Some((_, existing)) = entries.get(&key) {
             if existing.cluster_id != *cluster_id && epoch <= existing.epoch {
                 // Another cluster owns it at a higher or equal epoch
                 return Ok(existing.clone());
@@ -115,7 +127,7 @@ impl CrossClusterDirectory for InMemoryCrossClusterDirectory {
             epoch,
             registered_at: SystemTime::now(),
         };
-        entries.insert(key, ownership.clone());
+        entries.insert(key, (grain_id.clone(), ownership.clone()));
         Ok(ownership)
     }
 
@@ -131,11 +143,26 @@ impl CrossClusterDirectory for InMemoryCrossClusterDirectory {
         let key = Self::key(grain_id);
 
         // Only the owning cluster can deregister
-        if let Some(existing) = entries.get(&key)
+        if let Some((_, existing)) = entries.get(&key)
             && existing.cluster_id == *cluster_id
         {
             entries.remove(&key);
         }
         Ok(())
+    }
+
+    async fn list_owned_by(
+        &self,
+        cluster_id: &ClusterId,
+    ) -> Result<Vec<(GrainId, GrainOwnership)>, DirectoryError> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|e| DirectoryError::Backend(e.to_string()))?;
+        Ok(entries
+            .values()
+            .filter(|(_, o)| o.cluster_id == *cluster_id)
+            .cloned()
+            .collect())
     }
 }
