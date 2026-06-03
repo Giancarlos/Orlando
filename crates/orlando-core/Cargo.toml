@@ -2,6 +2,11 @@
 name = "orlando-core"
 version = "0.1.0"
 edition = "2024"
+description.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 tokio = { workspace = true }

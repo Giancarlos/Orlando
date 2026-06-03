@@ -2,6 +2,11 @@
 name = "orlando-persistence"
 version = "0.1.0"
 edition = "2024"
+description.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
 
 [features]
 default = []
@@ -9,8 +14,8 @@ redis = ["fred"]
 postgres = []
 
 [dependencies]
-orlando-core = { path = "../orlando-core" }
-orlando-runtime = { path = "../orlando-runtime" }
+orlando-core = { path = "../orlando-core", version = "0.1.0" }
+orlando-runtime = { path = "../orlando-runtime", version = "0.1.0" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

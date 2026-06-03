@@ -10,6 +10,13 @@ members = [
     "crates/orlando-client",
 ]
 
+[workspace.package]
+description = "A virtual actor framework in Rust, inspired by Microsoft Orleans."
+license = "MIT"
+homepage = "https://github.com/Giancarlos/Orlando"
+repository = "https://github.com/Giancarlos/Orlando"
+readme = "README.md"
+
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 dashmap = "6"

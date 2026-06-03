@@ -2,9 +2,14 @@
 name = "orlando-client"
 version = "0.1.0"
 edition = "2024"
+description.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
-orlando-cluster = { path = "../orlando-cluster" }
+orlando-cluster = { path = "../orlando-cluster", version = "0.1.0" }
 tokio = { workspace = true }
 tonic = { workspace = true }
 serde = { workspace = true }

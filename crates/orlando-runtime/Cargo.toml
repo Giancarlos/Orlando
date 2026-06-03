@@ -2,9 +2,14 @@
 name = "orlando-runtime"
 version = "0.1.0"
 edition = "2024"
+description.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
-orlando-core = { path = "../orlando-core" }
+orlando-core = { path = "../orlando-core", version = "0.1.0" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 dashmap = { workspace = true }
@@ -13,7 +18,7 @@ thiserror = { workspace = true }
 metrics = { workspace = true }
 
 [dev-dependencies]
-orlando-macros = { path = "../orlando-macros" }
+orlando-macros = { path = "../orlando-macros", version = "0.1.0" }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 metrics-exporter-prometheus = "0.16"
