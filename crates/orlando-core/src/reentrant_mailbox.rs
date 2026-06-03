@@ -1,4 +1,6 @@
 use std::any::Any;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -6,6 +8,7 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
+use crate::activation_state::{ActivationEvent, ActivationState, catch_panic};
 use crate::envelope::Envelope;
 use crate::grain::Grain;
 use crate::grain_context::{GrainActivator, GrainContext};
@@ -33,17 +36,35 @@ pub async fn run_reentrant_mailbox<G: Grain>(
         .with_cancellation(cancellation);
 
     tracing::debug!(%grain_id, "reentrant grain activating");
-    {
-        let mut guard = state.lock().await;
-        let s = guard.downcast_mut::<G::State>().expect("grain state type mismatch");
-        G::on_activate(s, &ctx).await;
-    }
+
+    // Per-message handler concurrency is governed by the JoinSet below, so the
+    // FSM here tracks the activation's *lifecycle phase* rather than a single
+    // in-flight message: Activating -> Idle (accepting messages) -> Draining ->
+    // Deactivating -> Closed. A panic in on_activate is contained and routed to
+    // Faulted so the directory cleanup at the end still runs.
+    let mut fsm = ActivationState::Activating;
+    let activate = {
+        let state = state.clone();
+        let ctx = ctx.clone();
+        Box::pin(async move {
+            let mut guard = state.lock().await;
+            let s = guard.downcast_mut::<G::State>().expect("grain state type mismatch");
+            G::on_activate(s, &ctx).await;
+        }) as Pin<Box<dyn Future<Output = ()> + Send>>
+    };
+    fsm = fsm.next(match catch_panic(activate).await {
+        Ok(()) => ActivationEvent::ActivateSucceeded,
+        Err(_) => {
+            tracing::error!(%grain_id, "on_activate panicked — reentrant activation faulted");
+            ActivationEvent::ActivateFailed
+        }
+    });
 
     let mut tasks = JoinSet::new();
     // Cap concurrent handlers to prevent unbounded task growth from message floods
     const MAX_CONCURRENT: usize = 256;
 
-    loop {
+    while fsm == ActivationState::Idle {
         tokio::select! {
             biased;
 
@@ -72,10 +93,12 @@ pub async fn run_reentrant_mailbox<G: Grain>(
                     }
                     Ok(None) => {
                         tracing::debug!(%grain_id, "reentrant grain mailbox closed");
+                        fsm = fsm.next(ActivationEvent::ChannelClosed); // Idle -> Draining
                         break;
                     }
                     Err(_) => {
                         tracing::debug!(%grain_id, "reentrant grain idle, deactivating");
+                        fsm = fsm.next(ActivationEvent::IdleTimeout); // Idle -> Draining
                         break;
                     }
                 }
@@ -83,19 +106,37 @@ pub async fn run_reentrant_mailbox<G: Grain>(
         }
     }
 
-    // Drain in-flight handlers before deactivation
+    // Drain in-flight handlers before deactivation (no-op if activation faulted).
     while let Some(result) = tasks.join_next().await {
         if let Err(e) = result {
             tracing::warn!(%grain_id, error = %e, "reentrant handler panicked during shutdown");
         }
     }
 
-    {
-        let mut guard = state.lock().await;
-        let s = guard.downcast_mut::<G::State>().expect("grain state type mismatch");
-        G::on_deactivate(s, &ctx).await;
+    // Teardown — directory removal is guaranteed regardless of how we got here.
+    match fsm {
+        ActivationState::Draining => {
+            fsm = fsm.next(ActivationEvent::DrainComplete); // -> Deactivating
+            let deactivate = {
+                let state = state.clone();
+                let ctx = ctx.clone();
+                Box::pin(async move {
+                    let mut guard = state.lock().await;
+                    let s = guard.downcast_mut::<G::State>().expect("grain state type mismatch");
+                    G::on_deactivate(s, &ctx).await;
+                }) as Pin<Box<dyn Future<Output = ()> + Send>>
+            };
+            let _ = catch_panic(deactivate).await;
+            fsm = fsm.next(ActivationEvent::DeactivateComplete); // -> Closed
+        }
+        ActivationState::Faulted => {
+            // on_activate panicked: state may be corrupt, skip on_deactivate.
+            fsm = fsm.next(ActivationEvent::DeactivateComplete); // -> Closed
+        }
+        other => tracing::warn!(%grain_id, ?other, "unexpected reentrant state at teardown"),
     }
 
     ctx.activator().remove(&grain_id);
+    debug_assert_eq!(fsm, ActivationState::Closed, "activation must end in Closed");
     tracing::debug!(%grain_id, "reentrant grain deactivated");
 }

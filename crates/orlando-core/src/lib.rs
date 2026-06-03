@@ -22,7 +22,7 @@ mod stream;
 pub mod testing;
 mod worker_ref;
 
-pub use activation_state::{ActivationEvent, ActivationState};
+pub use activation_state::{ActivationEvent, ActivationState, catch_panic};
 pub use cluster_id::ClusterId;
 pub use envelope::{Envelope, HandleFn, build_ask_envelope, recv_ask_response};
 pub use error::GrainError;

@@ -164,7 +164,10 @@ impl Future for CatchUnwind<'_> {
 ///
 /// Requires the `panic = "unwind"` strategy (the default). Under `panic = "abort"`
 /// the process terminates on panic and this cannot intercept it.
-pub(crate) async fn catch_panic(fut: BoxFuture<'_>) -> Result<(), Box<dyn Any + Send>> {
+///
+/// Exposed beyond this crate so persistence-backed mailbox loops
+/// (`orlando-persistence`) can contain handler/lifecycle panics the same way.
+pub async fn catch_panic(fut: BoxFuture<'_>) -> Result<(), Box<dyn Any + Send>> {
     CatchUnwind { inner: Some(fut) }.await
 }
 
