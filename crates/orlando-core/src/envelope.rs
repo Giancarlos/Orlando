@@ -50,6 +50,16 @@ impl Envelope {
     pub async fn handle(self, state: &mut (dyn Any + Send), ctx: &GrainContext) {
         (self.handle_fn)(state, ctx).await;
     }
+
+    /// Build the handler future without awaiting it, so callers (e.g. the
+    /// mailbox FSM) can wrap it for panic containment before driving it.
+    pub fn into_handler_future<'a>(
+        self,
+        state: &'a mut (dyn Any + Send),
+        ctx: &'a GrainContext,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        (self.handle_fn)(state, ctx)
+    }
 }
 
 /// Build an envelope + oneshot pair for a grain handler call.

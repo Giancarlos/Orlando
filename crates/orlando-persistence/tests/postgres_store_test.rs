@@ -15,7 +15,7 @@
 #[cfg(feature = "postgres")]
 mod tests {
     use orlando_core::GrainId;
-    use orlando_persistence::{PostgresStateStore, StateStore};
+    use orlando_persistence::{PersistenceError, PostgresStateStore, StateStore};
 
     fn test_url() -> String {
         std::env::var("ORLANDO_TEST_POSTGRES_URL")
@@ -134,6 +134,60 @@ mod tests {
 
         let loaded = store.load(&id).await.unwrap().unwrap();
         assert_eq!(loaded, data);
+
+        store.delete(&id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running PostgreSQL (set ORLANDO_TEST_POSTGRES_URL)"]
+    async fn etag_mismatch_on_duplicate_insert() {
+        // First save_with_etag(None) inserts; second must detect the unique
+        // violation via is_unique_violation() and surface EtagMismatch — not a
+        // raw Postgres error.
+        let store = PostgresStateStore::new(&test_url()).await.unwrap();
+        let id = grain("etag-dup-insert");
+        store.delete(&id).await.unwrap();
+
+        let etag = store.save_with_etag(&id, b"first", None).await.unwrap();
+        assert_eq!(etag.0, "1");
+
+        let err = store
+            .save_with_etag(&id, b"second", None)
+            .await
+            .expect_err("second insert must fail");
+        match err {
+            PersistenceError::EtagMismatch { expected, actual } => {
+                assert!(expected.is_none());
+                assert_eq!(actual.unwrap().0, "1");
+            }
+            other => panic!("expected EtagMismatch, got {other:?}"),
+        }
+
+        store.delete(&id).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running PostgreSQL (set ORLANDO_TEST_POSTGRES_URL)"]
+    async fn etag_mismatch_on_stale_update() {
+        let store = PostgresStateStore::new(&test_url()).await.unwrap();
+        let id = grain("etag-stale-update");
+        store.delete(&id).await.unwrap();
+
+        let v1 = store.save_with_etag(&id, b"v1", None).await.unwrap();
+        let v2 = store.save_with_etag(&id, b"v2", Some(&v1)).await.unwrap();
+
+        // Reusing v1 (stale) must produce EtagMismatch carrying v2 as actual.
+        let err = store
+            .save_with_etag(&id, b"v3", Some(&v1))
+            .await
+            .expect_err("stale etag update must fail");
+        match err {
+            PersistenceError::EtagMismatch { expected, actual } => {
+                assert_eq!(expected.unwrap().0, v1.0);
+                assert_eq!(actual.unwrap().0, v2.0);
+            }
+            other => panic!("expected EtagMismatch, got {other:?}"),
+        }
 
         store.delete(&id).await.unwrap();
     }

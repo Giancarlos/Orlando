@@ -153,10 +153,15 @@ impl GrainTransportService {
             _ => return Ok(None),
         };
 
-        // We need a &'static str for type_name. Use the registry to resolve it.
-        // For cross-cluster purposes we use the string form of the grain identity.
+        // Resolve the type to its registered &'static str. An unknown type
+        // cannot be owned by any cluster and must never be leaked into a
+        // &'static str (memory-exhaustion DoS), so fall through to local
+        // dispatch, where it is rejected with UnknownGrainType.
+        let Some(type_name) = self.registry.resolve_grain_type(&req.grain_type) else {
+            return Ok(None);
+        };
         let grain_id = GrainId {
-            type_name: self.registry.resolve_grain_type(&req.grain_type),
+            type_name,
             key: req.grain_key.clone(),
         };
 

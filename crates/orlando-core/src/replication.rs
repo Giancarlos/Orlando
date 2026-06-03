@@ -8,7 +8,6 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::cluster_id::ClusterId;
-use crate::grain_id::GrainId;
 
 /// A single replication log entry carrying a grain state snapshot or delta.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -26,15 +25,6 @@ pub struct ReplicationEntry {
     pub entry_type: ReplicationEntryType,
     /// Serialized grain state (format matches the grain's serializer).
     pub payload: Vec<u8>,
-}
-
-impl ReplicationEntry {
-    pub fn grain_id(&self) -> GrainId {
-        GrainId {
-            type_name: Box::leak(self.grain_type.clone().into_boxed_str()),
-            key: self.grain_key.clone(),
-        }
-    }
 }
 
 /// What kind of state the entry carries.

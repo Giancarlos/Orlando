@@ -134,17 +134,61 @@ impl FailoverManager {
                         }
                     }
                     (PeerStatus::Unreachable, FailoverPhase::Promoting) => {
-                        // Attempt promotion — in a real deployment this would
-                        // iterate over grains owned by the failed cluster and
-                        // CAS-register them. For now we log the intent.
-                        tracing::info!(
+                        let grains = match self.directory.list_owned_by(cluster_id).await {
+                            Ok(g) => g,
+                            Err(e) => {
+                                tracing::error!(
+                                    failed_cluster = %cluster_id,
+                                    error = %e,
+                                    "failover: directory list_owned_by failed, will retry next cycle"
+                                );
+                                continue;
+                            }
+                        };
+
+                        tracing::warn!(
                             failed_cluster = %cluster_id,
                             local_cluster = %self.local_cluster_id,
-                            "failover: ready to promote grains from failed cluster"
+                            grain_count = grains.len(),
+                            "failover: promoting grains from failed cluster"
                         );
-                        // Promotion is grain-specific and driven by the
-                        // replication consumer or directory scan. The manager
-                        // sets the phase so other components can query it.
+
+                        let mut max_epoch = 0u64;
+                        let mut promoted = 0usize;
+                        let mut lost = 0usize;
+                        let mut failed = 0usize;
+                        for (grain_id, ownership) in grains {
+                            match self.promote_grain(&grain_id, &ownership).await {
+                                Ok(new_owner) => {
+                                    if new_owner.cluster_id == self.local_cluster_id {
+                                        promoted += 1;
+                                        max_epoch = max_epoch.max(new_owner.epoch);
+                                    } else {
+                                        lost += 1;
+                                    }
+                                }
+                                Err(e) => {
+                                    failed += 1;
+                                    tracing::error!(
+                                        grain_type = grain_id.type_name,
+                                        grain_key = %grain_id.key,
+                                        error = %e,
+                                        "failover: promote_grain failed (continuing best-effort)"
+                                    );
+                                }
+                            }
+                        }
+
+                        tracing::info!(
+                            failed_cluster = %cluster_id,
+                            promoted, lost, failed,
+                            "failover: promotion sweep complete"
+                        );
+
+                        // Transition to Promoted regardless of partial failures;
+                        // next health-check cycle will retry any grains that
+                        // remain owned by the failed cluster.
+                        *phase = FailoverPhase::Promoted { epoch: max_epoch };
                     }
                     _ => {}
                 }

@@ -188,15 +188,15 @@ impl MessageRegistry {
         self.handlers.insert((grain_type, message_type), dispatch);
     }
 
-    /// Resolve a grain type string to its static str reference.
-    /// Falls back to a leaked string if the grain type is not registered.
-    pub fn resolve_grain_type(&self, grain_type: &str) -> &'static str {
-        if let Some(&s) = self.grain_types.get(grain_type) {
-            return s;
-        }
-        // Fallback: leak the string so we get a &'static str.
-        // This only happens for unknown grain types (which will fail dispatch anyway).
-        Box::leak(grain_type.to_string().into_boxed_str())
+    /// Resolve a grain type string to its registered `&'static str`, or `None`
+    /// if the type was never registered.
+    ///
+    /// Callers MUST reject unknown types rather than fabricating a `&'static str`:
+    /// the previous `Box::leak` fallback let a remote peer exhaust memory by
+    /// sending an unbounded stream of novel grain-type strings (a DoS), and an
+    /// unknown type cannot be dispatched or owned anyway.
+    pub fn resolve_grain_type(&self, grain_type: &str) -> Option<&'static str> {
+        self.grain_types.get(grain_type).copied()
     }
 
     /// Dispatch an incoming remote call to the registered handler.
@@ -334,6 +334,17 @@ mod tests {
         ) {
         }
         fn remove(&self, _id: &GrainId) {}
+    }
+
+    #[test]
+    fn resolve_grain_type_returns_none_for_unknown() {
+        let mut registry = MessageRegistry::new();
+        registry.register::<TestGrain, TestMsg>();
+
+        assert_eq!(registry.resolve_grain_type("TestGrain"), Some("TestGrain"));
+        // A network-supplied unknown type must resolve to None (no Box::leak),
+        // so a hostile peer cannot exhaust memory with novel type strings.
+        assert_eq!(registry.resolve_grain_type("AttackerSuppliedType"), None);
     }
 
     #[tokio::test]
