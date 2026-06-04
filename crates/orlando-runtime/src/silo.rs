@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use orlando_core::{
-    FilterChain, Grain, GrainCallFilter, GrainContext, GrainId, GrainRef, StatelessWorker,
-    WorkerGrainRef,
+    CancellationToken, FilterChain, Grain, GrainCallFilter, GrainContext, GrainId, GrainRef,
+    StatelessWorker, WorkerGrainRef,
 };
+use tokio::task::JoinHandle;
 
 use crate::directory::GrainDirectory;
+use crate::service::GrainService;
 
 type LifecycleHook = Box<dyn FnOnce() + Send>;
 
@@ -13,6 +15,9 @@ pub struct Silo {
     directory: Arc<GrainDirectory>,
     filters: FilterChain,
     shutdown_hooks: std::sync::Mutex<Vec<LifecycleHook>>,
+    /// Cancellation token shared with co-hosted services; cancelled on shutdown.
+    service_cancel: CancellationToken,
+    service_handles: std::sync::Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl Default for Silo {
@@ -56,6 +61,22 @@ impl Silo {
         self.make_context().get_worker_ref::<G>(key)
     }
 
+    /// Signal co-hosted [`GrainService`]s to stop (via their cancellation token)
+    /// and await their completion. Call during graceful shutdown.
+    pub async fn shutdown_services(&self) {
+        self.service_cancel.cancel();
+        let handles: Vec<JoinHandle<()>> = {
+            let mut g = self
+                .service_handles
+                .lock()
+                .expect("service_handles lock poisoned");
+            std::mem::take(&mut *g)
+        };
+        for h in handles {
+            let _ = h.await;
+        }
+    }
+
     /// Run shutdown hooks. Call this before dropping the silo.
     pub fn run_shutdown_hooks(&self) {
         let hooks: Vec<LifecycleHook> = {
@@ -86,6 +107,7 @@ pub struct SiloBuilder {
     max_activations: Option<usize>,
     on_startup: Vec<LifecycleHook>,
     on_shutdown: Vec<LifecycleHook>,
+    services: Vec<Arc<dyn GrainService>>,
 }
 
 impl std::fmt::Debug for SiloBuilder {
@@ -103,7 +125,15 @@ impl SiloBuilder {
             max_activations: None,
             on_startup: Vec::new(),
             on_shutdown: Vec::new(),
+            services: Vec::new(),
         }
+    }
+
+    /// Register a co-hosted background [`GrainService`], spawned when the silo
+    /// is built and stopped via [`Silo::shutdown_services`].
+    pub fn add_service(mut self, service: Arc<dyn GrainService>) -> Self {
+        self.services.push(service);
+        self
     }
 
     /// Add a grain call filter (interceptor) to the silo.
@@ -140,10 +170,31 @@ impl SiloBuilder {
             hook();
         }
 
+        let filters = FilterChain::new(self.filters);
+
+        // Spawn co-hosted services with a context that shares a cancellation
+        // token, so shutdown_services() can stop them.
+        let service_cancel = CancellationToken::new();
+        let mut service_handles = Vec::with_capacity(self.services.len());
+        for svc in self.services {
+            let ctx = GrainContext::with_filters(
+                GrainId {
+                    type_name: "silo-service",
+                    key: String::new(),
+                },
+                directory.clone(),
+                filters.clone(),
+            )
+            .with_cancellation(service_cancel.clone());
+            service_handles.push(tokio::spawn(async move { svc.run(ctx).await }));
+        }
+
         Silo {
             directory,
-            filters: FilterChain::new(self.filters),
+            filters,
             shutdown_hooks: std::sync::Mutex::new(self.on_shutdown),
+            service_cancel,
+            service_handles: std::sync::Mutex::new(service_handles),
         }
     }
 }
