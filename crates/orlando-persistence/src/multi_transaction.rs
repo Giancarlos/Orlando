@@ -55,6 +55,17 @@ pub enum TransactionError {
 /// previously-successful grains rely on compensating actions or the natural
 /// single-grain rollback that `TransactionalGrainRef::ask` provides.
 ///
+/// # Not two-phase commit — no cross-grain atomicity
+///
+/// This is **not** 2PC and gives **no atomicity across grains**. There is no
+/// prepare/vote phase, no coordinated commit, no durable coordinator log, and no
+/// participant idempotency or crash recovery. If a later step fails, earlier
+/// grains' changes are *already committed* and stay committed — you must
+/// compensate at the application layer. The coordinator only adds a correlation
+/// `TxId` and an overall timeout on top of per-grain rollback. Distributed
+/// transactions are a documented v1 non-goal; for atomicity, model the work as a
+/// saga with explicit compensation.
+///
 /// # Usage
 ///
 /// ```ignore
