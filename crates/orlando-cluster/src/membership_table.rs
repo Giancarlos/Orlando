@@ -22,7 +22,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 
-use crate::hash_ring::SiloAddress;
+use crate::hash_ring::{HashRing, SiloAddress};
 
 /// Liveness status of a silo in the membership table.
 ///
@@ -98,6 +98,22 @@ impl MembershipView {
     /// Look up a member's row by silo id.
     pub fn member(&self, silo_id: &str) -> Option<&MemberEntry> {
         self.members.iter().find(|m| m.addr.silo_id == silo_id)
+    }
+
+    /// Build the consistent-hash ring of `Active` silos for this view.
+    ///
+    /// This is the agreed-view → agreed-ring bridge: because the view is
+    /// totally ordered and `active_silos()` is deterministic, every silo that
+    /// has observed the same `version` builds a byte-identical ring, and so
+    /// agrees on both grain placement and (Phase B) directory-partition
+    /// ownership. The ring carries no version itself — callers pair it with
+    /// [`MembershipView::version`] and coordinate on that.
+    pub fn build_ring(&self, virtual_nodes: u32) -> HashRing {
+        let mut ring = HashRing::new(virtual_nodes);
+        for silo in self.active_silos() {
+            ring.add(silo);
+        }
+        ring
     }
 }
 
@@ -334,5 +350,45 @@ mod tests {
         let view = table.read_all().await.unwrap();
         assert_eq!(view.member("silo-a").unwrap().status, MembershipStatus::Dead);
         assert!(view.active_silos().is_empty(), "dead silo is not active");
+    }
+
+    #[tokio::test]
+    async fn identical_views_build_agreeing_rings() {
+        // The Phase A payoff: two silos at the same version place grains identically.
+        let table = InMemoryMembershipTable::new();
+        let mut v = 0;
+        for id in ["silo-a", "silo-b", "silo-c"] {
+            v = table.try_update(active(id, 1), v).await.unwrap().version;
+        }
+        let view = table.read_all().await.unwrap();
+        let ring1 = view.build_ring(64);
+        let ring2 = view.clone().build_ring(64);
+
+        assert_eq!(ring1.members().len(), 3);
+        for key in ["room-42", "user-7", "order-999", "tenant/abc"] {
+            assert_eq!(
+                ring1.get(key).map(|s| &s.silo_id),
+                ring2.get(key).map(|s| &s.silo_id),
+                "placement of {key} must agree across identical views"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dead_silos_are_not_placement_targets() {
+        let table = InMemoryMembershipTable::new();
+        let mut v = table.try_update(active("silo-a", 1), 0).await.unwrap().version;
+        v = table.try_update(active("silo-b", 1), v).await.unwrap().version;
+        let mut dead = active("silo-b", 1);
+        dead.status = MembershipStatus::Dead;
+        table.try_update(dead, v).await.unwrap();
+
+        let ring = table.read_all().await.unwrap().build_ring(64);
+        let placed: Vec<_> = ring.members().into_iter().map(|s| s.silo_id).collect();
+        assert_eq!(placed, ["silo-a"], "only active silos appear in the ring");
+        // Every placement lands on the one live silo.
+        for key in ["x", "y", "z"] {
+            assert_eq!(ring.get(key).unwrap().silo_id, "silo-a");
+        }
     }
 }
