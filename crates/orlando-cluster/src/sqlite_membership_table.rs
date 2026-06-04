@@ -106,12 +106,28 @@ impl MembershipTable for SqliteMembershipTable {
     ) -> Result<MembershipView, MembershipError> {
         let mut tx = self.pool.begin().await.map_err(be)?;
 
-        let (current,): (i64,) = sqlx::query_as("SELECT version FROM membership_version WHERE id = 0")
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(be)?;
-        if current as u64 != expected_version {
-            // Dropping `tx` without commit rolls the transaction back.
+        // Atomic compare-and-swap: bump the version only if it still equals
+        // `expected_version`. A single conditional UPDATE is atomic in SQLite
+        // (the write takes the database lock), so this is correct even with
+        // multiple connections/processes sharing the file — not just because of
+        // the single-connection pool. A read-modify-write (SELECT then UPDATE)
+        // would let two writers both read the same version and lose an update.
+        let bumped = sqlx::query(
+            "UPDATE membership_version SET version = version + 1 WHERE id = 0 AND version = ?",
+        )
+        .bind(expected_version as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(be)?;
+
+        if bumped.rows_affected() == 0 {
+            // Version didn't match — report the actual current version. Dropping
+            // `tx` without commit rolls back (nothing was written).
+            let (current,): (i64,) =
+                sqlx::query_as("SELECT version FROM membership_version WHERE id = 0")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(be)?;
             return Err(MembershipError::VersionConflict {
                 expected: expected_version,
                 actual: current as u64,
@@ -137,11 +153,6 @@ impl MembershipTable for SqliteMembershipTable {
         .execute(&mut *tx)
         .await
         .map_err(be)?;
-
-        sqlx::query("UPDATE membership_version SET version = version + 1 WHERE id = 0")
-            .execute(&mut *tx)
-            .await
-            .map_err(be)?;
 
         tx.commit().await.map_err(be)?;
         self.read_all().await
