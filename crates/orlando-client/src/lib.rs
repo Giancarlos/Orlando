@@ -38,9 +38,19 @@ pub use error::ClientError;
 pub struct OrlandoClient {
     pool: Arc<ConnectionPool>,
     ring: ArcSwap<HashRing>,
+    /// Per-request deadline. Without it, a silo that accepts the connection but
+    /// hangs would block the caller indefinitely. Default: 30s.
+    request_timeout: std::time::Duration,
 }
 
 impl OrlandoClient {
+    /// Set the per-request timeout (default 30s). Applies to each grain call;
+    /// on expiry the call fails (and is retried once like other transport errors).
+    pub fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.request_timeout = timeout;
+        self
+    }
+
     /// Connect to an Orlando cluster via any silo endpoint.
     ///
     /// Fetches the current member list and builds a local hash ring
@@ -87,6 +97,7 @@ impl OrlandoClient {
         Ok(Self {
             pool,
             ring: ArcSwap::from_pointee(ring),
+            request_timeout: std::time::Duration::from_secs(30),
         })
     }
 
@@ -131,6 +142,7 @@ impl OrlandoClient {
         Ok(Self {
             pool,
             ring: ArcSwap::from_pointee(ring),
+            request_timeout: std::time::Duration::from_secs(30),
         })
     }
 
@@ -232,17 +244,20 @@ impl OrlandoClient {
                 }
             };
 
-            let result = client
-                .invoke(InvokeRequest {
-                    grain_type: grain_type.to_string(),
-                    grain_key: grain_key.to_string(),
-                    message_type: message_type.to_string(),
-                    payload: payload.clone(),
-                    encoding,
-                    request_context: HashMap::new(),
-                    message_version: 0,
-                })
-                .await;
+            // Per-request deadline so a hung silo can't block the caller forever.
+            // tonic maps an exceeded deadline to a Status, handled by the Err arm
+            // below (retry once, then surface as a transport error).
+            let mut rpc = tonic::Request::new(InvokeRequest {
+                grain_type: grain_type.to_string(),
+                grain_key: grain_key.to_string(),
+                message_type: message_type.to_string(),
+                payload: payload.clone(),
+                encoding,
+                request_context: HashMap::new(),
+                message_version: 0,
+            });
+            rpc.set_timeout(self.request_timeout);
+            let result = client.invoke(rpc).await;
 
             match result {
                 Ok(response) => {
