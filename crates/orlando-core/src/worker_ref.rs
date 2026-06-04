@@ -63,6 +63,27 @@ impl<G: StatelessWorker> WorkerGrainRef<G> {
         recv_ask_response(rx, G::ask_timeout()).await
     }
 
+    /// Send a one-way message to the next worker in the pool (fire-and-forget).
+    ///
+    /// Like [`GrainRef::tell`](crate::GrainRef::tell) but round-robin across the
+    /// pool: enqueues without awaiting a reply.
+    pub async fn tell<M>(&self, msg: M) -> Result<(), GrainError>
+    where
+        M: Message,
+        G: GrainHandler<M>,
+    {
+        if self.senders.is_empty() {
+            return Err(GrainError::MailboxClosed);
+        }
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+        let (envelope, _rx) = build_ask_envelope::<G, M>(msg);
+        self.senders[idx]
+            .send(envelope)
+            .await
+            .map_err(|_| GrainError::MailboxClosed)?;
+        Ok(())
+    }
+
     /// Number of worker activations in the pool.
     pub fn pool_size(&self) -> usize {
         self.senders.len()
