@@ -1,6 +1,7 @@
 //! Tests for co-hosted grain services (background tasks in a silo).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -75,4 +76,40 @@ async fn grain_service_runs_and_calls_grains() {
     tokio::time::timeout(Duration::from_secs(2), silo.shutdown_services())
         .await
         .expect("services must stop promptly on shutdown");
+}
+
+// A service that ticks a shared counter until cancelled.
+static TICKS: AtomicUsize = AtomicUsize::new(0);
+
+struct TickerService;
+
+#[async_trait]
+impl GrainService for TickerService {
+    async fn run(&self, ctx: GrainContext) {
+        while !ctx.is_cancelled() {
+            TICKS.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+}
+
+/// Dropping the silo without calling shutdown_services() must still stop the
+/// service (the Drop impl cancels the token) — otherwise the task leaks forever.
+#[tokio::test]
+async fn dropping_silo_stops_services() {
+    {
+        let _silo = Silo::builder().add_service(Arc::new(TickerService)).build();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // _silo dropped here — no explicit shutdown_services().
+    }
+
+    // Give the service a moment to observe cancellation and exit, then confirm
+    // the tick count has stopped advancing.
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    let a = TICKS.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    let b = TICKS.load(Ordering::SeqCst);
+
+    assert!(a > 0, "service should have ticked while the silo was alive");
+    assert_eq!(a, b, "service must stop after the silo is dropped (a={a}, b={b}) — no leak");
 }

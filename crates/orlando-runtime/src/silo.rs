@@ -102,6 +102,17 @@ impl std::fmt::Debug for Silo {
     }
 }
 
+impl Drop for Silo {
+    /// Cancel co-hosted services if the silo is dropped without an explicit
+    /// `shutdown_services()`. Without this, the spawned service tasks would run
+    /// forever (dropping their `JoinHandle`s only detaches them). Cancellation
+    /// is synchronous; the tasks observe it and exit on their own (we can't
+    /// await them here). Idempotent with `shutdown_services()`.
+    fn drop(&mut self) {
+        self.service_cancel.cancel();
+    }
+}
+
 pub struct SiloBuilder {
     filters: Vec<Arc<dyn GrainCallFilter>>,
     max_activations: Option<usize>,
