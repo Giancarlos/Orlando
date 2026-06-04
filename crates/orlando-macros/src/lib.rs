@@ -1,3 +1,8 @@
+#![warn(missing_docs)]
+//! Procedural macros for Orlando: `#[grain]`, `#[message]`, and
+//! `#[grain_handler]`, which generate the trait impls that wire a grain, its
+//! messages, and their handlers into the runtime.
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Ident, ItemFn, ItemStruct, LitInt, LitStr, Path, Type};
