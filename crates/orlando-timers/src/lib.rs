@@ -1,3 +1,13 @@
+#![warn(missing_docs)]
+//! `orlando-timers` — volatile timers and durable reminders for grains.
+//!
+//! **Timers** ([`register_timer`], [`TimerHandle`], [`TimerTick`]) fire periodic
+//! messages into a grain's own mailbox and are cancelled when the grain
+//! deactivates. **Reminders** ([`ReminderService`], [`ReminderStore`],
+//! [`ReminderRegistration`], [`ReminderTick`]) are persisted via a
+//! [`ReminderStore`] backend ([`InMemoryReminderStore`], [`SqliteReminderStore`])
+//! so they survive silo restarts and re-fire on reactivation.
+
 mod reminder;
 mod reminder_service;
 mod reminder_store;
