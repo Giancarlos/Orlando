@@ -9,6 +9,9 @@ use crate::directory::GrainDirectory;
 
 type LifecycleHook = Box<dyn FnOnce() + Send>;
 
+/// A single-node host for grains. Owns the [`GrainDirectory`] and the call
+/// filter chain, and hands out [`GrainRef`](orlando_core::GrainRef)s via
+/// [`get_ref`](Silo::get_ref). Build one with [`Silo::builder`].
 pub struct Silo {
     directory: Arc<GrainDirectory>,
     filters: FilterChain,
@@ -22,10 +25,12 @@ impl Default for Silo {
 }
 
 impl Silo {
+    /// Start building a silo with custom filters and lifecycle hooks.
     pub fn builder() -> SiloBuilder {
         SiloBuilder::new()
     }
 
+    /// Create a silo with default configuration (no filters or hooks).
     pub fn new() -> Self {
         SiloBuilder::new().build()
     }
@@ -81,6 +86,8 @@ impl std::fmt::Debug for Silo {
     }
 }
 
+/// Builder for [`Silo`]: register call filters, an activation cap, and
+/// startup/shutdown hooks, then [`build`](SiloBuilder::build).
 pub struct SiloBuilder {
     filters: Vec<Arc<dyn GrainCallFilter>>,
     max_activations: Option<usize>,
@@ -130,6 +137,8 @@ impl SiloBuilder {
         self
     }
 
+    /// Finalize the configuration and construct the [`Silo`], running any
+    /// registered startup hooks.
     pub fn build(self) -> Silo {
         let directory = Arc::new(GrainDirectory::new());
         if let Some(limit) = self.max_activations {

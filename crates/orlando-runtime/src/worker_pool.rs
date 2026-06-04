@@ -6,8 +6,11 @@ use orlando_core::{Envelope, GrainId};
 /// A pool of activations for a stateless worker grain.
 /// Each activation has its own mailbox task and independent state.
 pub struct WorkerPool {
+    /// The stateless-worker grain id this pool serves.
     pub grain_id: GrainId,
+    /// Mailbox senders for the pooled activations (round-robin dispatch).
     pub senders: Vec<mpsc::Sender<Envelope>>,
+    /// Join handles for the pooled activations' mailbox tasks.
     pub tasks: Vec<JoinHandle<()>>,
 }
 
