@@ -244,9 +244,13 @@ impl OrlandoClient {
                 }
             };
 
-            // Per-request deadline so a hung silo can't block the caller forever.
-            // tonic maps an exceeded deadline to a Status, handled by the Err arm
-            // below (retry once, then surface as a transport error).
+            // Per-request deadline. `set_timeout` only sets the grpc-timeout
+            // header, which the *server* must honor — a hung or black-hole silo
+            // that never responds would otherwise block the caller forever. So
+            // we ALSO enforce the deadline client-side with tokio::time::timeout,
+            // which cancels the await regardless of the peer. An elapsed timeout
+            // becomes a Status that flows into the Err arm below (retry once,
+            // then surface as a transport error).
             let mut rpc = tonic::Request::new(InvokeRequest {
                 grain_type: grain_type.to_string(),
                 grain_key: grain_key.to_string(),
@@ -257,7 +261,12 @@ impl OrlandoClient {
                 message_version: 0,
             });
             rpc.set_timeout(self.request_timeout);
-            let result = client.invoke(rpc).await;
+            let result = match tokio::time::timeout(self.request_timeout, client.invoke(rpc)).await {
+                Ok(r) => r,
+                Err(_elapsed) => Err(tonic::Status::deadline_exceeded(
+                    "client-side request timeout",
+                )),
+            };
 
             match result {
                 Ok(response) => {
