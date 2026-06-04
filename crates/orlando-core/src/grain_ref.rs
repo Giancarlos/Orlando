@@ -12,6 +12,9 @@ use crate::grain_id::GrainId;
 use crate::message::Message;
 use crate::request_context::RequestContext;
 
+/// A cheap, cloneable, typed handle to a grain's mailbox. Use [`ask`](GrainRef::ask)
+/// to send a message and await its reply. Works the same whether the grain is
+/// local or remote.
 #[derive(Debug)]
 pub struct GrainRef<G: Grain> {
     pub(crate) sender: mpsc::Sender<Envelope>,
@@ -32,6 +35,7 @@ impl<G: Grain> Clone for GrainRef<G> {
 }
 
 impl<G: Grain> GrainRef<G> {
+    /// Create a ref from a mailbox sender, with an empty key and no filters.
     pub fn new(sender: mpsc::Sender<Envelope>) -> Self {
         Self {
             sender,
@@ -50,6 +54,7 @@ impl<G: Grain> GrainRef<G> {
         &self.sender
     }
 
+    /// Create a ref with an explicit grain id and filter chain.
     pub fn with_id(sender: mpsc::Sender<Envelope>, grain_id: GrainId, filters: FilterChain) -> Self {
         Self {
             sender,
@@ -59,6 +64,10 @@ impl<G: Grain> GrainRef<G> {
         }
     }
 
+    /// Send `msg` to the grain and await its typed reply.
+    ///
+    /// Returns [`GrainError`] if the mailbox is closed, the call times out, the
+    /// handler fails, or a deadlock (call cycle) is detected.
     pub async fn ask<M>(&self, msg: M) -> Result<M::Result, GrainError>
     where
         M: Message,

@@ -1,3 +1,12 @@
+#![warn(missing_docs)]
+//! `orlando-core` — the core virtual-actor primitives for Orlando.
+//!
+//! Defines the [`Grain`]/[`GrainHandler`]/[`Message`] traits, the grain mailbox
+//! loop and its lifecycle [`ActivationState`] FSM, cheap cloneable [`GrainRef`]
+//! handles, grain identity ([`GrainId`]), the [`GrainContext`] passed to
+//! handlers, and supporting types (filters, observers, streams, request
+//! context). The runtime and clustering crates build on these.
+
 /// Default capacity for grain mailbox channels.
 pub const MAILBOX_CAPACITY: usize = 256;
 
@@ -12,13 +21,17 @@ mod observer;
 mod grain_context;
 mod grain_id;
 mod grain_ref;
+/// The single-message-at-a-time grain mailbox loop, driven by the activation FSM.
 pub mod mailbox;
 mod message;
+/// Mailbox loop for `#[grain(reentrant)]` grains: concurrent dispatch with
+/// state access serialized by an async mutex.
 pub mod reentrant_mailbox;
 pub mod replication;
 mod replicated_grain;
 mod request_context;
 mod stream;
+/// Test helpers (e.g. `FakeActivator`) for unit-testing grains without a silo.
 pub mod testing;
 mod worker_ref;
 

@@ -16,6 +16,7 @@ pub struct FakeActivator {
 }
 
 impl FakeActivator {
+    /// Create an empty `FakeActivator` wrapped in an `Arc`.
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             senders: Mutex::new(HashMap::new()),

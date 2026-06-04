@@ -1,4 +1,7 @@
+/// A message a grain can handle. Each message declares the reply type it
+/// produces via [`Result`](Message::Result).
 pub trait Message: Send + 'static {
+    /// The reply type returned by the handler for this message.
     type Result: Send + 'static;
 }
 
