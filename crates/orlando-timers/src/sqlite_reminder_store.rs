@@ -62,7 +62,7 @@ fn intern_type_name(name: &str) -> &'static str {
     static CACHE: LazyLock<Mutex<HashMap<String, &'static str>>> =
         LazyLock::new(|| Mutex::new(HashMap::new()));
 
-    let mut cache = CACHE.lock().unwrap();
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(&cached) = cache.get(name) {
         return cached;
     }

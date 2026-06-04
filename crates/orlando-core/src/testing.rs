@@ -25,15 +25,15 @@ impl FakeActivator {
 
 impl GrainActivator for FakeActivator {
     fn get_sender(&self, grain_id: &GrainId) -> Option<mpsc::Sender<Envelope>> {
-        self.senders.lock().unwrap().get(grain_id).cloned()
+        self.senders.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(grain_id).cloned()
     }
 
     fn register(&self, grain_id: GrainId, sender: mpsc::Sender<Envelope>, _task: JoinHandle<()>) {
-        self.senders.lock().unwrap().insert(grain_id, sender);
+        self.senders.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(grain_id, sender);
     }
 
     fn remove(&self, grain_id: &GrainId) {
-        self.senders.lock().unwrap().remove(grain_id);
+        self.senders.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(grain_id);
     }
 }
 
