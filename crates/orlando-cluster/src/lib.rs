@@ -11,6 +11,7 @@ mod failure_detector;
 mod hash_ring;
 pub mod health_server;
 mod membership;
+mod membership_table;
 mod message_registry;
 mod multi_cluster;
 mod network_message;
@@ -45,6 +46,10 @@ pub use failure_detector::{FailureDetector, FailureDetectorConfig, MembershipCha
 pub use hash_ring::{HashRing, SiloAddress};
 pub use health_server::{StoreProbe, run_health_server};
 pub use membership::MembershipService;
+pub use membership_table::{
+    InMemoryMembershipTable, MemberEntry, MembershipError, MembershipStatus, MembershipTable,
+    MembershipView,
+};
 pub use message_registry::MessageRegistry;
 pub use multi_cluster::{ClusterHealth, MultiClusterConfig, PeerStatus};
 pub use network_message::{Encoding, NetworkMessage};
