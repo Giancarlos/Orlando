@@ -29,7 +29,7 @@ This model was pioneered by [Microsoft Orleans](https://www.microsoft.com/en-us/
 
 ### Persistence
 - **Automatic state persistence** — Grain state is loaded on activation and saved on deactivation via pluggable backends.
-- **Configurable persistence strategy** — `WriteOnDeactivate` (default), `WriteThrough` (save after every message), `WriteBack(Duration)` (periodic save).
+- **Configurable persistence strategy** — `WriteThrough` (default; durable save after every message), `WriteOnDeactivate` (fast, but loses state on crash), `WriteBack(Duration)` (periodic save).
 - **Transactional grains** — Automatic rollback on handler failure via `TransactionalGrainRef`.
 - **State versioning / migration** — `VersionedGrain` with migration chains (`v0 -> v1 -> v2`) for schema evolution.
 - **Event sourcing** — `JournaledGrain` appends events to a journal, replays on activation. Automatic snapshots.
@@ -141,13 +141,13 @@ use orlando_persistence::{PersistentSilo, PersistenceStrategy, SqliteStateStore}
 let store = SqliteStateStore::new("sqlite:orlando.db").await?;
 let silo = PersistentSilo::builder().store(store).build();
 
-// Write-on-deactivate (default)
+// Write-through (default): durable save after every message
 let counter = silo.persistent_get_ref::<PersistentCounter>("demo");
 
-// Write-through (save after every message)
+// Opt into write-on-deactivate (faster, but loses state on crash)
 let counter = silo.persistent_get_ref_with_strategy::<PersistentCounter>(
     "demo",
-    PersistenceStrategy::WriteThrough,
+    PersistenceStrategy::WriteOnDeactivate,
 );
 ```
 
