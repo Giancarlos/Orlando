@@ -166,6 +166,21 @@ impl GrainContext {
         &self.extensions
     }
 
+    /// Attach a per-activation extension value (one per type), replacing any
+    /// existing value of the same type. Extensions let middleware/infrastructure
+    /// store activation-scoped state (trace spans, tenant info, …) without the
+    /// grain being aware. They live for the activation and are dropped with it.
+    /// Convenience wrapper over [`extensions`](GrainContext::extensions).
+    pub fn set_extension<T: Send + Sync + 'static>(&self, value: T) {
+        self.extensions.insert(value);
+    }
+
+    /// Get a previously-set extension of type `T`, or `None`. Convenience
+    /// wrapper over [`extensions`](GrainContext::extensions).
+    pub fn get_extension<T: Send + Sync + 'static>(&self) -> Option<std::sync::Arc<T>> {
+        self.extensions.get::<T>()
+    }
+
     pub fn grain_id(&self) -> &GrainId {
         &self.grain_id
     }
