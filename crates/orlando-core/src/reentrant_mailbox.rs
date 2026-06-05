@@ -48,8 +48,13 @@ pub async fn run_reentrant_mailbox<G: Grain>(
         let ctx = ctx.clone();
         Box::pin(async move {
             let mut guard = state.lock().await;
-            let s = guard.downcast_mut::<G::State>().expect("grain state type mismatch");
-            G::on_activate(s, &ctx).await;
+            // The box was created here as G::State, so this downcast cannot fail;
+            // handle it gracefully anyway (no panic in library code) rather than
+            // expect(). A None would mean a corrupt invariant — log and skip.
+            match guard.downcast_mut::<G::State>() {
+                Some(s) => G::on_activate(s, &ctx).await,
+                None => tracing::error!(grain_id = %ctx.grain_id(), "reentrant grain state type mismatch — skipping on_activate"),
+            }
         }) as Pin<Box<dyn Future<Output = ()> + Send>>
     };
     fsm = fsm.next(match catch_panic(activate).await {
@@ -122,8 +127,10 @@ pub async fn run_reentrant_mailbox<G: Grain>(
                 let ctx = ctx.clone();
                 Box::pin(async move {
                     let mut guard = state.lock().await;
-                    let s = guard.downcast_mut::<G::State>().expect("grain state type mismatch");
-                    G::on_deactivate(s, &ctx).await;
+                    match guard.downcast_mut::<G::State>() {
+                        Some(s) => G::on_deactivate(s, &ctx).await,
+                        None => tracing::error!(grain_id = %ctx.grain_id(), "reentrant grain state type mismatch — skipping on_deactivate"),
+                    }
                 }) as Pin<Box<dyn Future<Output = ()> + Send>>
             };
             let _ = catch_panic(deactivate).await;
