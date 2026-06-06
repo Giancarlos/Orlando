@@ -39,19 +39,19 @@ impl InMemoryStateStore {
 #[async_trait]
 impl StateStore for InMemoryStateStore {
     async fn load(&self, grain_id: &GrainId) -> Result<Option<Vec<u8>>, PersistenceError> {
-        let data = self.data.lock().unwrap();
+        let data = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(data.get(grain_id).map(|(bytes, _)| bytes.clone()))
     }
 
     async fn save(&self, grain_id: &GrainId, bytes: &[u8]) -> Result<(), PersistenceError> {
         let etag = self.next_etag();
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         data.insert(grain_id.clone(), (bytes.to_vec(), etag));
         Ok(())
     }
 
     async fn delete(&self, grain_id: &GrainId) -> Result<(), PersistenceError> {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         data.remove(grain_id);
         Ok(())
     }
@@ -60,7 +60,7 @@ impl StateStore for InMemoryStateStore {
         &self,
         grain_id: &GrainId,
     ) -> Result<Option<(Vec<u8>, ETag)>, PersistenceError> {
-        let data = self.data.lock().unwrap();
+        let data = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(data
             .get(grain_id)
             .map(|(bytes, etag)| (bytes.clone(), ETag(etag.clone()))))
@@ -73,7 +73,7 @@ impl StateStore for InMemoryStateStore {
         expected_etag: Option<&ETag>,
     ) -> Result<ETag, PersistenceError> {
         let new_etag_str = self.next_etag();
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let current = data.get(grain_id);
         match (expected_etag, current) {

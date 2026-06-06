@@ -40,7 +40,7 @@ impl RateLimiter {
 
     #[allow(clippy::result_large_err)]
     fn check(&self) -> Result<(), Status> {
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Instant::now();
         if now.duration_since(guard.0).as_secs() >= 1 {
             *guard = (now, 1);

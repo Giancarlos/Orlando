@@ -149,7 +149,7 @@ impl ReminderService {
 
             for reg in due {
                 let dispatch = {
-                    let dispatchers = self.dispatchers.lock().unwrap();
+                    let dispatchers = self.dispatchers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     dispatchers.get(reg.grain_id.type_name).cloned()
                 };
 

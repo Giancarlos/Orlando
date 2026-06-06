@@ -53,18 +53,18 @@ impl InMemoryReminderStore {
 impl ReminderStore for InMemoryReminderStore {
     async fn save(&self, reg: &ReminderRegistration) -> Result<(), ReminderError> {
         let key = (reg.grain_id.clone(), reg.name.clone());
-        self.entries.lock().unwrap().insert(key, reg.clone());
+        self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, reg.clone());
         Ok(())
     }
 
     async fn delete(&self, grain_id: &GrainId, name: &str) -> Result<(), ReminderError> {
         let key = (grain_id.clone(), name.to_string());
-        self.entries.lock().unwrap().remove(&key);
+        self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
         Ok(())
     }
 
     async fn load_due(&self, now: SystemTime) -> Result<Vec<ReminderRegistration>, ReminderError> {
-        let entries = self.entries.lock().unwrap();
+        let entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let due = entries
             .values()
             .filter(|reg| reg.due_at <= now)
@@ -80,7 +80,7 @@ impl ReminderStore for InMemoryReminderStore {
         due_at: SystemTime,
     ) -> Result<(), ReminderError> {
         let key = (grain_id.clone(), name.to_string());
-        if let Some(entry) = self.entries.lock().unwrap().get_mut(&key) {
+        if let Some(entry) = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&key) {
             entry.due_at = due_at;
         }
         Ok(())
