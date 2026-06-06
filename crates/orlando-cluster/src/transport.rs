@@ -22,7 +22,7 @@ const MAX_HOPS: u32 = 3;
 const HOP_COUNT_KEY: &str = "__orlando_hop_count";
 
 /// Maximum payload size accepted for deserialization (64 MB).
-const MAX_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_PAYLOAD_SIZE: usize = 64 * 1024 * 1024;
 
 pub struct GrainTransportService {
     registry: Arc<MessageRegistry>,
