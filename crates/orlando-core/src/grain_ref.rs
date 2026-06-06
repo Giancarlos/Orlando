@@ -112,6 +112,45 @@ impl<G: Grain> GrainRef<G> {
         result
     }
 
+    /// Send a message without waiting for a reply (one-way / fire-and-forget).
+    ///
+    /// Returns `Ok(())` once the message is enqueued in the grain's mailbox; the
+    /// handler runs asynchronously and its return value (and any panic) is
+    /// discarded. Messages from the same caller are still delivered in order, so
+    /// a later `ask` observes the effects of earlier `tell`s.
+    ///
+    /// `on_before` filters still run (so auth/rejection applies); `on_after` does
+    /// not, since `tell` returns before the handler produces a result. Unlike
+    /// `ask`, there is no deadlock check — a one-way send never awaits a reply,
+    /// so it cannot form a blocking call cycle.
+    pub async fn tell<M>(&self, msg: M) -> Result<(), GrainError>
+    where
+        M: Message,
+        G: GrainHandler<M>,
+    {
+        let info = GrainCallInfo {
+            grain_id: self.grain_id.clone(),
+            message_type: std::any::type_name::<M>(),
+            started_at: Instant::now(),
+        };
+
+        if !self.filters.is_empty() {
+            self.filters
+                .run_before(&info)
+                .await
+                .map_err(GrainError::HandlerFailed)?;
+        }
+
+        // Reuse the ask envelope and drop the reply receiver: the handler's
+        // reply send becomes a harmless no-op.
+        let (envelope, _rx) = build_ask_envelope::<G, M>(msg);
+        self.sender
+            .send(envelope)
+            .await
+            .map_err(|_| GrainError::MailboxClosed)?;
+        Ok(())
+    }
+
     /// Send a message without blocking if the mailbox is full.
     ///
     /// Unlike `ask()`, this returns `GrainError::MailboxFull` immediately
