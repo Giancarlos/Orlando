@@ -29,6 +29,8 @@ pub struct ReminderService {
 }
 
 impl ReminderService {
+    /// Create a reminder service over `store`, dispatching ticks via `activator`,
+    /// with the default 500ms poll interval.
     pub fn new(
         store: Arc<dyn ReminderStore>,
         activator: Arc<dyn GrainActivator>,
@@ -41,6 +43,8 @@ impl ReminderService {
         })
     }
 
+    /// Like [`new`](ReminderService::new) but with a custom poll interval for
+    /// checking due reminders.
     pub fn with_poll_interval(
         store: Arc<dyn ReminderStore>,
         activator: Arc<dyn GrainActivator>,

@@ -11,8 +11,11 @@ use crate::observer::{ObserverSet, SubscriptionId};
 /// `GrainHandler<StreamItem<T>>`.
 #[derive(Debug, Clone)]
 pub struct StreamItem<T: Send + 'static> {
+    /// Name of the stream this item was published to.
     pub stream_name: String,
+    /// The payload delivered to the consumer.
     pub item: T,
+    /// Monotonic per-stream sequence number.
     pub sequence: u64,
 }
 
@@ -48,6 +51,7 @@ impl<T: Clone + Send + 'static> Default for StreamProducer<T> {
 }
 
 impl<T: Clone + Send + 'static> StreamProducer<T> {
+    /// Create a producer that publishes to the named stream.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),

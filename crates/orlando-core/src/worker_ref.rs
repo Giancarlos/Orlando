@@ -36,6 +36,8 @@ impl<G: StatelessWorker> std::fmt::Debug for WorkerGrainRef<G> {
 }
 
 impl<G: StatelessWorker> WorkerGrainRef<G> {
+    /// Create a worker ref over a pool of activation mailbox senders
+    /// (messages are dispatched round-robin across them).
     pub fn new(senders: Vec<mpsc::Sender<Envelope>>) -> Self {
         Self {
             senders: Arc::new(senders),

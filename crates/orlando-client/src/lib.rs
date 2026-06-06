@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! External client for calling Orlando grains from non-silo processes.
 //!
 //! ```ignore

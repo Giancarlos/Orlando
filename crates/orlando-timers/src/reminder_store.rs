@@ -9,8 +9,10 @@ use orlando_core::GrainId;
 
 use crate::reminder::ReminderRegistration;
 
+/// Errors returned by a [`ReminderStore`].
 #[derive(Debug, Error)]
 pub enum ReminderError {
+    /// The underlying store backend failed.
     #[error("reminder store error: {0}")]
     Store(String),
 }
@@ -18,9 +20,13 @@ pub enum ReminderError {
 /// Pluggable backend for persisting reminder registrations.
 #[async_trait]
 pub trait ReminderStore: Send + Sync + 'static {
+    /// Persist (insert or replace) a reminder registration.
     async fn save(&self, reg: &ReminderRegistration) -> Result<(), ReminderError>;
+    /// Remove a reminder by grain id and name.
     async fn delete(&self, grain_id: &GrainId, name: &str) -> Result<(), ReminderError>;
+    /// Return all reminders due to fire at or before `now`.
     async fn load_due(&self, now: SystemTime) -> Result<Vec<ReminderRegistration>, ReminderError>;
+    /// Advance a reminder's next-fire time after it fires.
     async fn update_due_at(
         &self,
         grain_id: &GrainId,
@@ -42,6 +48,7 @@ impl Default for InMemoryReminderStore {
 }
 
 impl InMemoryReminderStore {
+    /// Create an empty in-memory reminder store.
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),

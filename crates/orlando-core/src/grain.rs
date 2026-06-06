@@ -5,13 +5,26 @@ use async_trait::async_trait;
 use crate::grain_context::GrainContext;
 use crate::Message;
 
+/// A virtual-actor grain type: its state and lifecycle configuration.
+///
+/// Implement this (usually via `#[grain]`) to define a grain. The runtime
+/// activates a grain on first message and deactivates it after
+/// [`idle_timeout`](Grain::idle_timeout). Per the no-threading invariant, one
+/// activation processes one message at a time and owns its `State` exclusively.
 #[async_trait]
 pub trait Grain: Send + 'static {
+    /// The grain's private state, constructed via `Default` on activation.
     type State: Default + Send + 'static;
 
+    /// Lifecycle hook run once after the state is constructed/loaded, before the
+    /// first message. Default: no-op.
     async fn on_activate(_state: &mut Self::State, _ctx: &GrainContext) {}
+    /// Lifecycle hook run once during graceful deactivation, after the last
+    /// message. Not guaranteed to run on a crash. Default: no-op.
     async fn on_deactivate(_state: &mut Self::State, _ctx: &GrainContext) {}
 
+    /// How long an activation may sit idle (no messages) before the runtime
+    /// deactivates it to free resources. Default: 5 minutes.
     fn idle_timeout() -> Duration {
         Duration::from_secs(300)
     }
@@ -74,8 +87,11 @@ pub trait Grain: Send + 'static {
     }
 }
 
+/// Handles one message type `M` for a grain. Implement once per message type
+/// the grain accepts (typically via `#[grain_handler]`).
 #[async_trait]
 pub trait GrainHandler<M: Message>: Grain {
+    /// Process `msg` with exclusive access to `state`, returning the reply.
     async fn handle(state: &mut Self::State, msg: M, ctx: &GrainContext) -> M::Result;
 }
 

@@ -7,10 +7,12 @@ use serde::{Deserialize, Serialize};
 pub struct ClusterId(pub String);
 
 impl ClusterId {
+    /// Create a `ClusterId` from any string-like value.
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
+    /// Borrow the cluster id as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }

@@ -10,6 +10,9 @@ use crate::grain_context::GrainContext;
 use crate::message::Message;
 use crate::request_context::RequestContext;
 
+/// Type-erased handler closure stored in an [`Envelope`]: given the grain's
+/// `&mut` state and its [`GrainContext`], it runs the handler and sends the
+/// reply over the captured oneshot channel.
 pub type HandleFn = Box<
     dyn for<'a> FnOnce(
             &'a mut (dyn Any + Send),
@@ -18,6 +21,8 @@ pub type HandleFn = Box<
         + Send,
 >;
 
+/// A type-erased message queued on a grain's mailbox, pairing the handler
+/// closure with a debug label for tracing.
 pub struct Envelope {
     pub(crate) handle_fn: HandleFn,
     /// Optional debug label for identifying the message type in logs.
@@ -33,6 +38,7 @@ impl std::fmt::Debug for Envelope {
 }
 
 impl Envelope {
+    /// Wrap a handler closure in an envelope with an `"unknown"` debug label.
     pub fn new(handle_fn: HandleFn) -> Self {
         Self {
             handle_fn,
@@ -40,6 +46,8 @@ impl Envelope {
         }
     }
 
+    /// Wrap a handler closure in an envelope tagged with `label` (the message
+    /// type name) for tracing.
     pub fn with_label(handle_fn: HandleFn, label: &'static str) -> Self {
         Self {
             handle_fn,
@@ -47,6 +55,8 @@ impl Envelope {
         }
     }
 
+    /// Run the handler against the grain's `state`, awaiting it to completion and
+    /// sending the reply. Consumes the envelope.
     pub async fn handle(self, state: &mut (dyn Any + Send), ctx: &GrainContext) {
         (self.handle_fn)(state, ctx).await;
     }

@@ -42,22 +42,27 @@ pub struct FilterChain {
 }
 
 impl FilterChain {
+    /// Build a chain from an ordered list of filters (run in order).
     pub fn new(filters: Vec<Arc<dyn GrainCallFilter>>) -> Self {
         Self {
             filters: Arc::new(filters),
         }
     }
 
+    /// An empty chain that runs no filters.
     pub fn empty() -> Self {
         Self {
             filters: Arc::new(Vec::new()),
         }
     }
 
+    /// Whether the chain has no filters.
     pub fn is_empty(&self) -> bool {
         self.filters.is_empty()
     }
 
+    /// Run each filter's `on_before` hook in order; short-circuits with `Err`
+    /// (rejecting the call) if any filter returns one.
     pub async fn run_before(&self, info: &GrainCallInfo) -> Result<(), String> {
         for filter in self.filters.iter() {
             filter.on_before(info).await?;
@@ -65,6 +70,8 @@ impl FilterChain {
         Ok(())
     }
 
+    /// Run each filter's `on_after` hook in order, passing whether the call
+    /// succeeded.
     pub async fn run_after(&self, info: &GrainCallInfo, result_ok: bool) {
         for filter in self.filters.iter() {
             filter.on_after(info, result_ok).await;

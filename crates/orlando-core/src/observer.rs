@@ -53,6 +53,7 @@ impl<N: Message<Result = ()> + Clone> Default for ObserverSet<N> {
 }
 
 impl<N: Message<Result = ()> + Clone> ObserverSet<N> {
+    /// Create an empty observer set.
     pub fn new() -> Self {
         Self {
             subscribers: Vec::new(),
