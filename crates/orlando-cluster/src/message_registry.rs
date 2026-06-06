@@ -440,4 +440,56 @@ mod tests {
             _ => {} // any other outcome is fine
         }
     }
+
+    // Fixture with a real field so truncated/garbage bytes fail to decode
+    // (a unit struct would decode from any bytes).
+    #[derive(Serialize, Deserialize)]
+    struct Payloaded {
+        name: String,
+    }
+    impl Message for Payloaded {
+        type Result = ();
+    }
+    impl crate::network_message::NetworkMessage for Payloaded {
+        fn message_type_name() -> &'static str {
+            "Payloaded"
+        }
+    }
+    #[async_trait::async_trait]
+    impl GrainHandler<Payloaded> for TestGrain {
+        async fn handle(_s: &mut Self::State, _m: Payloaded, _c: &orlando_core::GrainContext) {}
+    }
+
+    // PROD-23: a malformed/truncated payload must return a typed error, never panic.
+    #[tokio::test]
+    async fn malformed_payload_returns_typed_error_not_panic() {
+        let mut registry = MessageRegistry::new();
+        registry.register::<TestGrain, Payloaded>();
+
+        // Encode a valid message, then truncate to its length-prefix byte so the
+        // String body is missing — bincode must fail to decode.
+        let valid =
+            bincode::serde::encode_to_vec(&Payloaded { name: "hello".into() }, bincode::config::standard())
+                .unwrap();
+        let truncated = valid[..1].to_vec();
+
+        let result = registry
+            .dispatch(
+                "TestGrain",
+                "key-1".to_string(),
+                "Payloaded",
+                0,
+                truncated,
+                Encoding::Bincode,
+                HashMap::new(),
+                Arc::new(FakeActivator),
+            )
+            .await;
+
+        // Reaching this assert at all proves no panic; the variant proves a typed error.
+        assert!(
+            matches!(result, Err(ClusterError::Deserialization(_))),
+            "truncated payload must return a typed Deserialization error, got {result:?}"
+        );
+    }
 }

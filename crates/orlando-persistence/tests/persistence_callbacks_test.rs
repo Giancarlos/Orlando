@@ -134,14 +134,17 @@ impl GrainHandler<GetCount> for PlainPersistent {
 /// Tests WriteOnDeactivate callbacks, WriteThrough callbacks, and no-op defaults.
 #[tokio::test]
 async fn persistence_lifecycle_callbacks() {
-    // --- Part 1: WriteOnDeactivate (default strategy) ---
+    // --- Part 1: WriteOnDeactivate (explicit opt-in; WriteThrough is now the default) ---
     {
         event_log().lock().await.clear();
 
         let store = InMemoryStateStore::new();
         let silo = PersistentSilo::builder().store(store).build();
 
-        let counter = silo.persistent_get_ref::<CallbackCounter>("cb-1");
+        let counter = silo.persistent_get_ref_with_strategy::<CallbackCounter>(
+            "cb-1",
+            PersistenceStrategy::WriteOnDeactivate,
+        );
         counter.ask(Increment { amount: 5 }).await.unwrap();
         let count = counter.ask(GetCount).await.unwrap();
         assert_eq!(count, 5);

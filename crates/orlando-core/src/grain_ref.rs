@@ -12,6 +12,9 @@ use crate::grain_id::GrainId;
 use crate::message::Message;
 use crate::request_context::RequestContext;
 
+/// A cheap, cloneable, typed handle to a grain's mailbox. Use [`ask`](GrainRef::ask)
+/// to send a message and await its reply. Works the same whether the grain is
+/// local or remote.
 #[derive(Debug)]
 pub struct GrainRef<G: Grain> {
     pub(crate) sender: mpsc::Sender<Envelope>,
@@ -32,6 +35,7 @@ impl<G: Grain> Clone for GrainRef<G> {
 }
 
 impl<G: Grain> GrainRef<G> {
+    /// Create a ref from a mailbox sender, with an empty key and no filters.
     pub fn new(sender: mpsc::Sender<Envelope>) -> Self {
         Self {
             sender,
@@ -50,6 +54,7 @@ impl<G: Grain> GrainRef<G> {
         &self.sender
     }
 
+    /// Create a ref with an explicit grain id and filter chain.
     pub fn with_id(sender: mpsc::Sender<Envelope>, grain_id: GrainId, filters: FilterChain) -> Self {
         Self {
             sender,
@@ -59,6 +64,10 @@ impl<G: Grain> GrainRef<G> {
         }
     }
 
+    /// Send `msg` to the grain and await its typed reply.
+    ///
+    /// Returns [`GrainError`] if the mailbox is closed, the call times out, the
+    /// handler fails, or a deadlock (call cycle) is detected.
     pub async fn ask<M>(&self, msg: M) -> Result<M::Result, GrainError>
     where
         M: Message,
@@ -110,6 +119,45 @@ impl<G: Grain> GrainRef<G> {
         }
 
         result
+    }
+
+    /// Send a message without waiting for a reply (one-way / fire-and-forget).
+    ///
+    /// Returns `Ok(())` once the message is enqueued in the grain's mailbox; the
+    /// handler runs asynchronously and its return value (and any panic) is
+    /// discarded. Messages from the same caller are still delivered in order, so
+    /// a later `ask` observes the effects of earlier `tell`s.
+    ///
+    /// `on_before` filters still run (so auth/rejection applies); `on_after` does
+    /// not, since `tell` returns before the handler produces a result. Unlike
+    /// `ask`, there is no deadlock check — a one-way send never awaits a reply,
+    /// so it cannot form a blocking call cycle.
+    pub async fn tell<M>(&self, msg: M) -> Result<(), GrainError>
+    where
+        M: Message,
+        G: GrainHandler<M>,
+    {
+        let info = GrainCallInfo {
+            grain_id: self.grain_id.clone(),
+            message_type: std::any::type_name::<M>(),
+            started_at: Instant::now(),
+        };
+
+        if !self.filters.is_empty() {
+            self.filters
+                .run_before(&info)
+                .await
+                .map_err(GrainError::HandlerFailed)?;
+        }
+
+        // Reuse the ask envelope and drop the reply receiver: the handler's
+        // reply send becomes a harmless no-op.
+        let (envelope, _rx) = build_ask_envelope::<G, M>(msg);
+        self.sender
+            .send(envelope)
+            .await
+            .map_err(|_| GrainError::MailboxClosed)?;
+        Ok(())
     }
 
     /// Send a message without blocking if the mailbox is full.

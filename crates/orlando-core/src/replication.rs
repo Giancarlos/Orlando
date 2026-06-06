@@ -14,6 +14,7 @@ use crate::cluster_id::ClusterId;
 pub struct ReplicationEntry {
     /// The grain this entry belongs to.
     pub grain_type: String,
+    /// The grain's key within its type.
     pub grain_key: String,
     /// Monotonically increasing sequence number per grain.
     pub sequence: u64,
@@ -42,5 +43,8 @@ pub enum ReplicationMode {
     /// Replicate after every handler invocation.
     Immediate,
     /// Batch replication entries at a fixed interval.
-    Batched { interval: Duration },
+    Batched {
+        /// How often to flush the batch.
+        interval: Duration,
+    },
 }

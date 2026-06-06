@@ -15,16 +15,22 @@ use crate::mailbox;
 use crate::reentrant_mailbox;
 use crate::worker_ref::WorkerGrainRef;
 
+/// Builds a single grain activation: given the grain id and a cancellation
+/// token, spawns the mailbox task and returns its sender + join handle.
 pub type ActivationFactory =
     Box<dyn FnOnce(GrainId, CancellationToken) -> (mpsc::Sender<Envelope>, JoinHandle<()>) + Send>;
 
+/// Like [`ActivationFactory`] but callable repeatedly, to build each activation
+/// in a stateless-worker pool.
 pub type PoolFactory =
     Box<dyn Fn(GrainId, CancellationToken) -> (mpsc::Sender<Envelope>, JoinHandle<()>) + Send>;
 
 /// Trait for the backing store that tracks active grains.
 /// Implemented by GrainDirectory in orlando-runtime.
 pub trait GrainActivator: Send + Sync + 'static {
+    /// Return the mailbox sender for an already-active grain, if any.
     fn get_sender(&self, grain_id: &GrainId) -> Option<mpsc::Sender<Envelope>>;
+    /// Record a newly-activated grain's mailbox sender and task handle.
     fn register(&self, grain_id: GrainId, sender: mpsc::Sender<Envelope>, task: JoinHandle<()>);
 
     /// Remove a grain's activation entry. Called by the mailbox loop on deactivation.
@@ -85,6 +91,8 @@ pub struct GrainContext {
 }
 
 impl GrainContext {
+    /// Create a context for `grain_id` backed by `activator`, with no filters,
+    /// a fresh request context, and a new cancellation token.
     pub fn new(grain_id: GrainId, activator: Arc<dyn GrainActivator>) -> Self {
         Self {
             grain_id,
@@ -96,6 +104,7 @@ impl GrainContext {
         }
     }
 
+    /// Like [`new`](GrainContext::new) but with an explicit filter chain.
     pub fn with_filters(
         grain_id: GrainId,
         activator: Arc<dyn GrainActivator>,
@@ -166,6 +175,22 @@ impl GrainContext {
         &self.extensions
     }
 
+    /// Attach a per-activation extension value (one per type), replacing any
+    /// existing value of the same type. Extensions let middleware/infrastructure
+    /// store activation-scoped state (trace spans, tenant info, …) without the
+    /// grain being aware. They live for the activation and are dropped with it.
+    /// Convenience wrapper over [`extensions`](GrainContext::extensions).
+    pub fn set_extension<T: Send + Sync + 'static>(&self, value: T) {
+        self.extensions.insert(value);
+    }
+
+    /// Get a previously-set extension of type `T`, or `None`. Convenience
+    /// wrapper over [`extensions`](GrainContext::extensions).
+    pub fn get_extension<T: Send + Sync + 'static>(&self) -> Option<std::sync::Arc<T>> {
+        self.extensions.get::<T>()
+    }
+
+    /// The id of the grain this context belongs to.
     pub fn grain_id(&self) -> &GrainId {
         &self.grain_id
     }

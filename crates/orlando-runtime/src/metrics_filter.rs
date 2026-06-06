@@ -25,6 +25,8 @@ pub struct MetricsFilter {
 }
 
 impl MetricsFilter {
+    /// Create a metrics filter. Add it to a silo to record per-grain-type call
+    /// counts, durations, errors, and the active-activations gauge.
     pub fn new() -> Self {
         Self { _private: () }
     }

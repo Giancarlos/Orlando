@@ -179,6 +179,61 @@ impl<G: Grain> ClusterGrainRef<G> {
         }
     }
 
+    /// Send a one-way message (fire-and-forget); the cluster analogue of
+    /// [`GrainRef::tell`].
+    ///
+    /// For a local target this enqueues without awaiting a reply. For a remote
+    /// target the call is dispatched in a background task and this returns
+    /// immediately — the reply and any error are discarded (logged), so the
+    /// caller never blocks on the network round-trip. No retries (there is no
+    /// result to observe success/failure against).
+    pub async fn tell<M>(&self, msg: M) -> Result<(), GrainError>
+    where
+        M: NetworkMessage,
+        G: GrainHandler<M>,
+        M::Result: Serialize + DeserializeOwned,
+    {
+        match &self.inner {
+            RefInner::Local(sender) => GrainRef::<G>::new(sender.clone()).tell(msg).await,
+            RefInner::Remote {
+                endpoint,
+                grain_type,
+                grain_key,
+                pool,
+            } => {
+                let payload = bincode::serde::encode_to_vec(&msg, bincode::config::standard())
+                    .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;
+                let endpoint = endpoint.clone();
+                let grain_type: &'static str = grain_type;
+                let grain_key = grain_key.clone();
+                let pool = pool.clone();
+                // Capture the caller's request context now — a spawned task has
+                // no task-local, so propagation would otherwise be lost.
+                let request_context = RequestContext::current().to_map();
+                tokio::spawn(async move {
+                    if let Err(e) = Self::remote_invoke_oneway::<M>(
+                        &pool,
+                        &endpoint,
+                        grain_type,
+                        &grain_key,
+                        &payload,
+                        request_context,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            endpoint = %endpoint,
+                            grain_type,
+                            error = %e,
+                            "one-way remote grain call failed (dropped)"
+                        );
+                    }
+                });
+                Ok(())
+            }
+        }
+    }
+
     /// Send a read-only message. If a fresh-enough replica exists locally,
     /// the result is deserialized from the replica store without a network hop.
     /// Otherwise falls back to `ask()` (forwarding to the primary).
@@ -280,5 +335,45 @@ impl<G: Grain> ClusterGrainRef<G> {
         .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;
 
         Ok(result)
+    }
+
+    /// Like [`remote_invoke`](Self::remote_invoke) but discards the reply — used
+    /// by [`tell`](Self::tell). Only the delivery matters; the response payload
+    /// is ignored (no `M::Result` deserialization).
+    async fn remote_invoke_oneway<M>(
+        pool: &Arc<ConnectionPool>,
+        endpoint: &str,
+        grain_type: &str,
+        grain_key: &str,
+        payload: &[u8],
+        request_context: std::collections::HashMap<String, String>,
+    ) -> Result<(), GrainError>
+    where
+        M: NetworkMessage,
+        M::Result: Serialize + DeserializeOwned,
+    {
+        let mut client = pool
+            .get_transport(endpoint)
+            .await
+            .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;
+
+        let response = client
+            .invoke(pool.authorized_request(InvokeRequest {
+                grain_type: grain_type.to_string(),
+                grain_key: grain_key.to_string(),
+                message_type: M::message_type_name().to_string(),
+                payload: payload.to_vec(),
+                encoding: 0, // bincode silo-to-silo
+                request_context,
+                message_version: M::message_version(),
+            }))
+            .await
+            .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;
+
+        let inner = response.into_inner();
+        if !inner.error.is_empty() {
+            return Err(GrainError::RemoteCallFailed(inner.error));
+        }
+        Ok(())
     }
 }

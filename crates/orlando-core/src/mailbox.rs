@@ -14,7 +14,7 @@ use crate::grain_id::GrainId;
 /// The grain mailbox loop, driven by an explicit [`ActivationState`] FSM.
 ///
 /// The activation is always in exactly one well-defined state. A handler panic
-/// is contained (via [`catch_panic`]) and routed to `Faulted` rather than
+/// is contained (via `catch_panic`) and routed to `Faulted` rather than
 /// aborting the task, so the directory cleanup at the end always runs — a
 /// panicking handler can never leave a stale directory entry pointing at a dead
 /// mailbox. The single-message-at-a-time invariant is preserved: exactly one

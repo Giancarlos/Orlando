@@ -8,6 +8,7 @@ use orlando_core::{Envelope, GrainContext, GrainHandler, Message};
 /// The grain must implement `GrainHandler<TimerTick>` to receive these.
 #[derive(Debug)]
 pub struct TimerTick {
+    /// Name of the timer that fired.
     pub name: String,
 }
 

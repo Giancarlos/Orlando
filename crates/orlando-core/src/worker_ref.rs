@@ -36,6 +36,8 @@ impl<G: StatelessWorker> std::fmt::Debug for WorkerGrainRef<G> {
 }
 
 impl<G: StatelessWorker> WorkerGrainRef<G> {
+    /// Create a worker ref over a pool of activation mailbox senders
+    /// (messages are dispatched round-robin across them).
     pub fn new(senders: Vec<mpsc::Sender<Envelope>>) -> Self {
         Self {
             senders: Arc::new(senders),
@@ -61,6 +63,27 @@ impl<G: StatelessWorker> WorkerGrainRef<G> {
             .map_err(|_| GrainError::MailboxClosed)?;
 
         recv_ask_response(rx, G::ask_timeout()).await
+    }
+
+    /// Send a one-way message to the next worker in the pool (fire-and-forget).
+    ///
+    /// Like [`GrainRef::tell`](crate::GrainRef::tell) but round-robin across the
+    /// pool: enqueues without awaiting a reply.
+    pub async fn tell<M>(&self, msg: M) -> Result<(), GrainError>
+    where
+        M: Message,
+        G: GrainHandler<M>,
+    {
+        if self.senders.is_empty() {
+            return Err(GrainError::MailboxClosed);
+        }
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+        let (envelope, _rx) = build_ask_envelope::<G, M>(msg);
+        self.senders[idx]
+            .send(envelope)
+            .await
+            .map_err(|_| GrainError::MailboxClosed)?;
+        Ok(())
     }
 
     /// Number of worker activations in the pool.

@@ -10,6 +10,11 @@ use orlando_core::{ActivationFactory, CancellationToken, Envelope, GrainActivato
 use crate::activation::Activation;
 use crate::worker_pool::WorkerPool;
 
+/// The silo's registry of live grain activations and worker pools.
+///
+/// Implements `GrainActivator`: looks up or activates grains on demand
+/// (activate-on-miss) and removes them on deactivation, with an optional cap on
+/// concurrent activations.
 #[derive(Debug)]
 pub struct GrainDirectory {
     activations: DashMap<GrainId, Activation>,
@@ -26,6 +31,7 @@ impl Default for GrainDirectory {
 }
 
 impl GrainDirectory {
+    /// Create an empty directory with no activation limit.
     pub fn new() -> Self {
         Self {
             activations: DashMap::new(),
@@ -48,6 +54,8 @@ impl GrainDirectory {
         self.activations.len()
     }
 
+    /// Remove and return a grain's activation entry, decrementing the active
+    /// gauge. Called by the mailbox loop on deactivation.
     pub fn remove(&self, id: &GrainId) -> Option<Activation> {
         self.activations.remove(id).map(|(_, a)| {
             metrics::gauge!("orlando.grain.activations_active",

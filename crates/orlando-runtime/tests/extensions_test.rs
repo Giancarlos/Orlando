@@ -74,3 +74,45 @@ async fn extension_insert_and_remove() {
     assert_eq!(removed.max_per_second, 50);
     assert!(ext.get::<RateLimitConfig>().is_none());
 }
+
+// --- Ergonomic ctx.set_extension / get_extension API ---
+
+struct Tenant(String);
+
+struct SetTenant(String);
+impl Message for SetTenant {
+    type Result = ();
+}
+
+struct GetTenant;
+impl Message for GetTenant {
+    type Result = Option<String>;
+}
+
+#[async_trait]
+impl GrainHandler<SetTenant> for ExtGrain {
+    async fn handle(_s: &mut ExtState, msg: SetTenant, ctx: &GrainContext) {
+        ctx.set_extension(Tenant(msg.0));
+    }
+}
+
+#[async_trait]
+impl GrainHandler<GetTenant> for ExtGrain {
+    async fn handle(_s: &mut ExtState, _m: GetTenant, ctx: &GrainContext) -> Option<String> {
+        ctx.get_extension::<Tenant>().map(|t| t.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn ctx_set_get_extension_persists_across_messages() {
+    let silo = Silo::new();
+    let grain = silo.get_ref::<ExtGrain>("tenant-doc");
+
+    // Not set yet.
+    assert_eq!(grain.ask(GetTenant).await.unwrap(), None);
+
+    // One message attaches the extension; a later message on the same
+    // activation still sees it (per-activation state).
+    grain.ask(SetTenant("acme".into())).await.unwrap();
+    assert_eq!(grain.ask(GetTenant).await.unwrap(), Some("acme".to_string()));
+}

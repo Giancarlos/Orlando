@@ -45,6 +45,16 @@ impl ClusterGateway for ClusterGatewayService {
         let req = request.into_inner();
         let encoding = Encoding::from_proto(req.encoding);
 
+        // Reject oversized payloads before deserialization — same guard as the
+        // intra-cluster invoke path, so the gateway can't be used to bypass it.
+        if req.payload.len() > crate::transport::MAX_PAYLOAD_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "payload size {} exceeds maximum of {} bytes",
+                req.payload.len(),
+                crate::transport::MAX_PAYLOAD_SIZE,
+            )));
+        }
+
         tracing::debug!(
             grain_type = %req.grain_type,
             grain_key = %req.grain_key,

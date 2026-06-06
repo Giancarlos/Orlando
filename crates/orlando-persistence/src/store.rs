@@ -39,11 +39,14 @@ pub enum PersistenceError {
 /// Controls when grain state is persisted to the store.
 #[derive(Debug, Clone)]
 pub enum PersistenceStrategy {
-    /// Save state only when the grain deactivates (default).
-    /// Lowest overhead, but state changes are lost if the silo crashes.
+    /// Save state only when the grain deactivates.
+    /// Lowest overhead, but **all state since the last deactivation is lost if
+    /// the silo crashes** — `on_deactivate` is not guaranteed to run on a crash.
+    /// Opt into this only for state you can afford to lose.
     WriteOnDeactivate,
-    /// Save state after every message handler completes.
-    /// Highest durability, but adds I/O latency to every message.
+    /// Save state after every message handler completes (default).
+    /// Durable: state is persisted before the reply, so a crash loses nothing
+    /// already acknowledged. Adds store I/O latency to every mutating message.
     WriteThrough,
     /// Save state periodically at the given interval, plus on deactivation.
     /// Balances durability and performance — at most `interval` of work is lost on crash.
@@ -52,8 +55,11 @@ pub enum PersistenceStrategy {
 }
 
 impl Default for PersistenceStrategy {
+    /// Safe-by-default: durable per-message writes. The lossy `WriteOnDeactivate`
+    /// mode (no crash durability) is an explicit opt-in. A stateful framework
+    /// should not silently lose acknowledged state on a crash.
     fn default() -> Self {
-        Self::WriteOnDeactivate
+        Self::WriteThrough
     }
 }
 

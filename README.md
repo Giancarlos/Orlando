@@ -2,6 +2,22 @@
 
 A virtual actor framework in Rust, inspired by [Microsoft Orleans](https://github.com/dotnet/orleans).
 
+Published on crates.io:
+[`orlando-core`](https://crates.io/crates/orlando-core) ·
+[`orlando-runtime`](https://crates.io/crates/orlando-runtime) ·
+[`orlando-persistence`](https://crates.io/crates/orlando-persistence) ·
+[`orlando-cluster`](https://crates.io/crates/orlando-cluster) ·
+[`orlando-timers`](https://crates.io/crates/orlando-timers) ·
+[`orlando-client`](https://crates.io/crates/orlando-client) ·
+[`orlando-macros`](https://crates.io/crates/orlando-macros)
+
+> ⚠️ **Status: early work in progress.** Orlando is under active development and
+> APIs may change between releases — pin a version and expect breaking changes.
+> It is designed with the help of [Claude Code](https://claude.com/claude-code)
+> and currently tested against personal and sample projects rather than
+> large-scale production deployments. **Runnable sample projects will be provided**
+> so anyone can test and experiment with it. Feedback and experimentation welcome.
+
 ## What is a virtual actor?
 
 Traditional actors (Erlang, Akka) require you to manually create, manage, and destroy actor instances. Virtual actors flip this: **every actor conceptually always exists**. You never create or destroy one — you just talk to it by identity, and the runtime handles the rest.
@@ -29,7 +45,7 @@ This model was pioneered by [Microsoft Orleans](https://www.microsoft.com/en-us/
 
 ### Persistence
 - **Automatic state persistence** — Grain state is loaded on activation and saved on deactivation via pluggable backends.
-- **Configurable persistence strategy** — `WriteOnDeactivate` (default), `WriteThrough` (save after every message), `WriteBack(Duration)` (periodic save).
+- **Configurable persistence strategy** — `WriteThrough` (default; durable save after every message), `WriteOnDeactivate` (fast, but loses state on crash), `WriteBack(Duration)` (periodic save).
 - **Transactional grains** — Automatic rollback on handler failure via `TransactionalGrainRef`.
 - **State versioning / migration** — `VersionedGrain` with migration chains (`v0 -> v1 -> v2`) for schema evolution.
 - **Event sourcing** — `JournaledGrain` appends events to a journal, replays on activation. Automatic snapshots.
@@ -82,15 +98,15 @@ It installs `metrics-exporter-prometheus` as the global recorder, builds a `Silo
 
 ## Crate Layout
 
-| Crate | Purpose |
-|---|---|
-| `orlando-core` | Grain/Message/GrainHandler traits, mailbox loop, filters, observers, streams, request context, cancellation |
-| `orlando-runtime` | Silo, grain directory, activation management, metrics filter, lifecycle hooks |
-| `orlando-macros` | `#[grain]`, `#[message]`, `#[grain_handler]` proc macros |
-| `orlando-persistence` | Persistent/transactional/versioned/journaled grains, state stores, ETags |
-| `orlando-timers` | Volatile timers and durable reminders |
-| `orlando-cluster` | Multi-silo clustering, gRPC transport, SWIM, placement, TLS, auth, retry, discovery, multi-cluster geo-replication |
-| `orlando-client` | External client SDK for non-silo processes |
+| Crate | Docs | Purpose |
+|---|---|---|
+| [`orlando-core`](https://crates.io/crates/orlando-core) | [docs.rs](https://docs.rs/orlando-core) | Grain/Message/GrainHandler traits, mailbox loop, filters, observers, streams, request context, cancellation |
+| [`orlando-runtime`](https://crates.io/crates/orlando-runtime) | [docs.rs](https://docs.rs/orlando-runtime) | Silo, grain directory, activation management, metrics filter, lifecycle hooks |
+| [`orlando-macros`](https://crates.io/crates/orlando-macros) | [docs.rs](https://docs.rs/orlando-macros) | `#[grain]`, `#[message]`, `#[grain_handler]` proc macros |
+| [`orlando-persistence`](https://crates.io/crates/orlando-persistence) | [docs.rs](https://docs.rs/orlando-persistence) | Persistent/transactional/versioned/journaled grains, state stores, ETags |
+| [`orlando-timers`](https://crates.io/crates/orlando-timers) | [docs.rs](https://docs.rs/orlando-timers) | Volatile timers and durable reminders |
+| [`orlando-cluster`](https://crates.io/crates/orlando-cluster) | [docs.rs](https://docs.rs/orlando-cluster) | Multi-silo clustering, gRPC transport, SWIM, placement, TLS, auth, retry, discovery, multi-cluster geo-replication |
+| [`orlando-client`](https://crates.io/crates/orlando-client) | [docs.rs](https://docs.rs/orlando-client) | External client SDK for non-silo processes |
 
 ## Quick Start
 
@@ -141,13 +157,13 @@ use orlando_persistence::{PersistentSilo, PersistenceStrategy, SqliteStateStore}
 let store = SqliteStateStore::new("sqlite:orlando.db").await?;
 let silo = PersistentSilo::builder().store(store).build();
 
-// Write-on-deactivate (default)
+// Write-through (default): durable save after every message
 let counter = silo.persistent_get_ref::<PersistentCounter>("demo");
 
-// Write-through (save after every message)
+// Opt into write-on-deactivate (faster, but loses state on crash)
 let counter = silo.persistent_get_ref_with_strategy::<PersistentCounter>(
     "demo",
-    PersistenceStrategy::WriteThrough,
+    PersistenceStrategy::WriteOnDeactivate,
 );
 ```
 
