@@ -204,7 +204,7 @@ impl<G: Grain> ClusterGrainRef<G> {
                 let payload = bincode::serde::encode_to_vec(&msg, bincode::config::standard())
                     .map_err(|e| GrainError::RemoteCallFailed(e.to_string()))?;
                 let endpoint = endpoint.clone();
-                let grain_type: &'static str = *grain_type;
+                let grain_type: &'static str = grain_type;
                 let grain_key = grain_key.clone();
                 let pool = pool.clone();
                 // Capture the caller's request context now — a spawned task has
