@@ -26,10 +26,9 @@ fn warn_once_if_write_on_deactivate(strategy: &PersistenceStrategy) {
     if matches!(strategy, PersistenceStrategy::WriteOnDeactivate) {
         WARNED.call_once(|| {
             tracing::warn!(
-                "persistence: at least one grain uses PersistenceStrategy::WriteOnDeactivate \
-                 (the default). State changes are lost on silo crash before idle deactivation. \
-                 Use .strategy(PersistenceStrategy::WriteThrough) on the grain ref for \
-                 crash-durability, or WriteBack(interval) for a periodic flush tradeoff."
+                "persistence: at least one grain opts into PersistenceStrategy::WriteOnDeactivate. \
+                 State changes are lost on silo crash before idle deactivation. The durable \
+                 default is WriteThrough; use WriteBack(interval) for a periodic flush tradeoff."
             );
         });
     }

@@ -72,9 +72,9 @@ impl PersistentSilo {
         self.make_context().get_ref::<G>(key)
     }
 
-    /// Get a reference to a persistent grain using the default strategy (WriteOnDeactivate).
-    /// State is automatically loaded from the store on activation
-    /// and saved back on deactivation.
+    /// Get a reference to a persistent grain using the default strategy (`WriteThrough`).
+    /// State is automatically loaded from the store on activation and, by default,
+    /// saved after every message so a crash loses nothing already acknowledged.
     pub fn persistent_get_ref<G>(&self, key: impl Into<String>) -> GrainRef<G>
     where
         G: PersistentGrain,
@@ -85,8 +85,8 @@ impl PersistentSilo {
 
     /// Get a reference to a persistent grain with a specific persistence strategy.
     ///
-    /// - `WriteOnDeactivate` — save only when the grain deactivates (default, lowest overhead).
-    /// - `WriteThrough` — save after every message handler (highest durability).
+    /// - `WriteThrough` — save after every message handler (default; durable).
+    /// - `WriteOnDeactivate` — save only when the grain deactivates (lowest overhead, loses state on crash).
     /// - `WriteBack(interval)` — save periodically + on deactivation (balanced).
     pub fn persistent_get_ref_with_strategy<G>(
         &self,
@@ -130,6 +130,12 @@ impl PersistentSilo {
     /// Transactional grains support automatic rollback on handler failure
     /// and mid-handler `save_state()` via `TransactionContext`.
     /// Uses the same persistent mailbox — rollback logic is in the envelope closure.
+    ///
+    /// Unlike regular persistent grains (which default to durable `WriteThrough`),
+    /// transactional grains use `WriteOnDeactivate` as their base strategy: the
+    /// transaction governs durability explicitly via `save_state()` checkpoints
+    /// (and rollback restores the last checkpoint), so automatic per-message
+    /// write-through would clobber those checkpoints and defeat `read_state()`.
     pub fn transactional_get_ref<G>(&self, key: impl Into<String>) -> TransactionalGrainRef<G>
     where
         G: TransactionalGrain,
@@ -146,7 +152,10 @@ impl PersistentSilo {
         let serializer = entry.serializer.clone();
 
         let activator_for_closure = activator.clone();
-        let strategy = PersistenceStrategy::default();
+        // Transactional grains manage durability via explicit save_state() checkpoints
+        // and rollback, so they base on WriteOnDeactivate rather than the (now durable)
+        // global default — auto-write-through would overwrite mid-handler checkpoints.
+        let strategy = PersistenceStrategy::WriteOnDeactivate;
         let store_for_ref = store.clone();
         let sender = activator.get_or_insert(
             grain_id.clone(),
@@ -165,7 +174,7 @@ impl PersistentSilo {
         TransactionalGrainRef::new(sender, store_for_ref, grain_id)
     }
 
-    /// Get a reference to a versioned grain using the default strategy (WriteOnDeactivate).
+    /// Get a reference to a versioned grain using the default strategy (`WriteThrough`).
     ///
     /// Versioned grains support automatic state migration on load.
     /// When the stored state version is older than `G::state_version()`,
